@@ -144,6 +144,12 @@ type block struct {
 	branchTables []*BranchTable   // All branch tables that were defined in this block.
 }
 
+type Label struct {
+	PC    int
+	Index int
+	Op    byte
+}
+
 // BytecodeMetadata encapsulates metadata about a bytecode stream.
 type BytecodeMetadata struct {
 	BranchTables []*BranchTable
@@ -153,6 +159,8 @@ type BytecodeMetadata struct {
 	// avoid generating native code which has an inbound
 	// jump target somewhere deep inside.
 	InboundTargets map[int64]struct{}
+
+	LabelTables map[int]Label
 }
 
 // Compile rewrites WebAssembly bytecode from its disassembly.
@@ -163,6 +171,8 @@ func Compile(disassembly []disasm.Instr) ([]byte, *BytecodeMetadata) {
 	metadata := make([]InstructionMetadata, 0, len(disassembly))
 	branchTables := []*BranchTable{}
 	inboundTargets := make(map[int64]struct{})
+	labelTables := make(map[int]Label)
+	labeln := 0
 
 	curBlockDepth := -1
 	blocks := make(map[int]*block) // maps nesting depths (labels) to blocks
@@ -174,6 +184,11 @@ func Compile(disassembly []disasm.Instr) ([]byte, *BytecodeMetadata) {
 			Start: index,
 			Size:  size,
 		})
+	}
+
+	emitLabel := func(pc int, op byte) {
+		labelTables[pc] = Label{PC: pc, Index: labeln, Op: op}
+		labeln++
 	}
 
 	blocks[-1] = &block{}
@@ -273,10 +288,15 @@ func Compile(disassembly []disasm.Instr) ([]byte, *BytecodeMetadata) {
 			for _, offset := range block.patchOffsets {
 				code := buffer.Bytes()
 				buffer = patchOffset(code, offset, block.offset, inboundTargets)
+				emitLabel(int(block.offset), ops.Block)
 			}
 
 			for _, table := range block.branchTables {
 				table.patchTable(table.blocksLen-depth-1, int64(block.offset), inboundTargets)
+				for _, target := range table.Targets {
+					emitLabel(int(target.Addr), ops.BrTable)
+				}
+				emitLabel(int(table.DefaultTarget.Addr), ops.BrTable)
 			}
 
 			delete(blocks, curBlockDepth)
@@ -375,6 +395,7 @@ func Compile(disassembly []disasm.Instr) ([]byte, *BytecodeMetadata) {
 	for _, offset := range blocks[-1].patchOffsets {
 		code := buffer.Bytes()
 		buffer = patchOffset(code, offset, int64(addr), inboundTargets)
+		emitLabel(int(addr), ops.Block)
 	}
 
 	for _, table := range branchTables {
@@ -384,6 +405,7 @@ func Compile(disassembly []disasm.Instr) ([]byte, *BytecodeMetadata) {
 		BranchTables:   branchTables,
 		Instructions:   metadata,
 		InboundTargets: inboundTargets,
+		LabelTables:    labelTables,
 	}
 }
 

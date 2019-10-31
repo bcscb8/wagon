@@ -81,6 +81,11 @@ func InitMemManager(dataEndIdx int, size int, maxMemSize int) (*MemManager, erro
 	}, nil
 }
 
+// HeapSize --
+func (mm *MemManager) HeapSize() int {
+	return mm.currHeapSize
+}
+
 func (mm *MemManager) Release() {
 	// memPool.memory.Put(mm.Memory)
 	// memPool.allocTree.Put(mm.memAllocTree)

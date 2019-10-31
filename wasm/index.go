@@ -61,7 +61,10 @@ func (m *Module) populateFunctions() error {
 
 	// If available, fill in the name field for the imported functions
 	for i := range m.FunctionIndexSpace {
-		m.FunctionIndexSpace[i].Name = names[uint32(i)]
+		// m.FunctionIndexSpace[i].Name = names[uint32(i)]
+		if name, ok := names[uint32(i)]; ok {
+			m.FunctionIndexSpace[i].Name = name
+		}
 	}
 
 	// Add the functions from the wasm itself to the function list
@@ -87,6 +90,15 @@ func (m *Module) populateFunctions() error {
 	funcs := make([]uint32, 0, len(m.Function.Types)+len(m.imports.Funcs))
 	funcs = append(funcs, m.imports.Funcs...)
 	funcs = append(funcs, m.Function.Types...)
+
+	for name, entry := range m.Export.Entries {
+		if entry.Kind == ExternalFunction {
+			index := int(entry.Index)
+			if m.FunctionIndexSpace[index-1].Name == "" {
+				m.FunctionIndexSpace[index-1].Name = name
+			}
+		}
+	}
 	m.Function.Types = funcs
 	return nil
 }

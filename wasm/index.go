@@ -94,8 +94,8 @@ func (m *Module) populateFunctions() error {
 	for name, entry := range m.Export.Entries {
 		if entry.Kind == ExternalFunction {
 			index := int(entry.Index)
-			if m.FunctionIndexSpace[index-1].Name == "" {
-				m.FunctionIndexSpace[index-1].Name = name
+			if m.FunctionIndexSpace[index].Name == "" {
+				m.FunctionIndexSpace[index].Name = name
 			}
 		}
 	}

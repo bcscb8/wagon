@@ -35,7 +35,7 @@ type Function struct {
 }
 
 func (fct Function) String() string {
-	return fmt.Sprintf("{Sig: %s, Body: %s, Host: %v}", fct.Sig.String(), fct.Body.String(), fct.IsHost())
+	return fmt.Sprintf("{Sig: %s, Body: %s, Host: %v, Name: %s}", fct.Sig.String(), fct.Body.String(), fct.IsHost(), fct.Name)
 }
 
 // IsHost indicates whether this function is a host function as defined in:

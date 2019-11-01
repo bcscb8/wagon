@@ -175,7 +175,7 @@ func (g *CGenContext) op() byte {
 				cost = GasQuickStep
 			}
 		}
-		g.writeln(fmt.Sprintf("vm->gas_used += %d; if (vm->gas_used > vm->gas_limit) { panic(vm, \"OutOfGas\"); }", cost))
+		g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { panic(vm, \"OutOfGas\"); }", cost))
 	}
 
 	g.opCount++
@@ -236,6 +236,9 @@ typedef union value {
 	uint8_t 	vu8;
 	int8_t 		vi8;
 } value_t;
+
+#define likely(x)       __builtin_expect((x),1)
+#define unlikely(x)     __builtin_expect((x),0)
 
 static inline uint64_t clz32(uint32_t x) {
 	return __builtin_clz(x);
@@ -298,6 +301,22 @@ func (g *CGenContext) Generate() ([]byte, error) {
 	buf.WriteString("\n")
 	buf.WriteString(cbasic)
 	buf.WriteString("\n//--------------------------\n\n")
+
+	for index, f := range g.vm.funcs {
+		name := g.vm.module.FunctionIndexSpace[index]
+		if _, ok := f.(goFunction); ok {
+			log.Printf("[Generate] goFunction: index:%d, name:%s", index, name)
+		} else {
+			log.Printf("[Generate] local Function: index:%d, name:%s", index, name)
+		}
+	}
+
+	for index, entry := range g.vm.module.Import.Entries {
+		log.Printf("[Generate] Import: index:%d, entry:%s", index, entry)
+	}
+	for name, entry := range g.vm.module.Export.Entries {
+		log.Printf("[Generate] Export: name:%s, entry:%s", name, entry.String())
+	}
 
 	// function declation
 	names := make([]string, 0, len(g.vm.funcs))
@@ -362,7 +381,7 @@ func (g *CGenContext) Generate() ([]byte, error) {
 		if index > 0 {
 			buf.WriteString(", ")
 		}
-		buf.WriteString(name)
+		buf.WriteString(fmt.Sprintf("\"%s\"", name))
 	}
 	buf.WriteString("};\n")
 	buf.WriteString("\n//--------------------------\n\n")
@@ -691,7 +710,7 @@ func genI32BinOp(g *CGenContext, op byte) {
 	a := g.popStack()
 
 	if opStr == "/" || opStr == "%" {
-		g.sprintf("if (%s%d.%s == 0) { panic(vm, \"div zero\"); }\n", VARIABLE_PREFIX, b, vtype)
+		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"div zero\"); }\n", VARIABLE_PREFIX, b, vtype)
 	}
 	buf := fmt.Sprintf("%s%d.%s = (%s%d.%s %s %s%d.%s);", VARIABLE_PREFIX, c, vtype,
 		VARIABLE_PREFIX, a, vtype,
@@ -771,7 +790,7 @@ func genI64BinOp(g *CGenContext, op byte) {
 	a := g.popStack()
 
 	if opStr == "/" || opStr == "%" {
-		g.sprintf("if (%s%d.%s == 0) { panic(vm, \"div zero\"); }", VARIABLE_PREFIX, b, vtype)
+		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"div zero\"); }", VARIABLE_PREFIX, b, vtype)
 	}
 	buf := fmt.Sprintf("%s%d.%s = (%s%d.%s %s %s%d.%s);", VARIABLE_PREFIX, c, vtype,
 		VARIABLE_PREFIX, a, vtype,
@@ -1091,7 +1110,7 @@ func genCallOp(g *CGenContext, op byte) error {
 			}
 			goFuncArgs.WriteString("};")
 
-			buf.WriteString(fmt.Sprintf(", %d, &args%d", len(args), g.calln))
+			buf.WriteString(fmt.Sprintf(", %d, &args%d[0]", len(args), g.calln))
 			g.calln++
 		} else {
 			buf.WriteString(fmt.Sprintf(", %d, NULL", len(args)))
@@ -1164,7 +1183,7 @@ func genJmpOp(g *CGenContext, op byte) {
 		target := g.fetchUint64()
 		cond := g.popStack()
 		if label, ok := g.labelTables[int(target)]; ok {
-			buf.WriteString(fmt.Sprintf("if (%s%d.vu32 == 0) {goto %s%d;}", VARIABLE_PREFIX, cond,
+			buf.WriteString(fmt.Sprintf("if (likely(%s%d.vu32 == 0)) {goto %s%d;}", VARIABLE_PREFIX, cond,
 				LABEL_PREFIX, label.Index))
 
 			if hasStack("OpJmpZ", g.pc, target) {
@@ -1186,7 +1205,7 @@ func genJmpOp(g *CGenContext, op byte) {
 		discard := g.fetchInt64()
 		cond := g.popStack()
 		if label, ok := g.labelTables[int(target)]; ok {
-			buf.WriteString(fmt.Sprintf("if (%s%d.vu32 != 0) {goto %s%d;}", VARIABLE_PREFIX, cond,
+			buf.WriteString(fmt.Sprintf("if (likely(%s%d.vu32 != 0)) {goto %s%d;}", VARIABLE_PREFIX, cond,
 				LABEL_PREFIX, label.Index))
 
 			if hasStack("OpJmpNz", g.pc, target) {

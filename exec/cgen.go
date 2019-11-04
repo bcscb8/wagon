@@ -287,17 +287,6 @@ static inline uint64_t rotr64( uint64_t x, uint64_t r) {
 // -----------------------------------------------------
 //  env api wrapper
 
-/*
-	if (unlikely(vm->gas_used >= vm->gas_limit))
-		panic(vm, "OutOfGas");
-
-	uint64_t cost = n * 2;
-	if (unlikely((vm->gas_limit - vm->gas_used) < cost))
-		panic(vm, "OutOfGas");
-
-	vm->gas_used += cost;
-*/
-
 static const uint64_t MAX_U64 = (uint64_t)(-1);
 static const uint32_t MAX_U32 = (uint32_t)(-1);
 
@@ -1306,7 +1295,12 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 
 		if len(fsig.ReturnTypes) > 0 {
 			g.pushStack(g.varn)
-			buf.WriteString(fmt.Sprintf("%s%d.vu64 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
+			switch fsig.ReturnTypes[0] {
+			case wasm.ValueTypeI32:
+				buf.WriteString(fmt.Sprintf("%s%d.vu32 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
+			case wasm.ValueTypeI64:
+				buf.WriteString(fmt.Sprintf("%s%d.vu64 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
+			}
 		} else {
 			buf.WriteString(fmt.Sprintf("GoFunc(vm, env_func_names[%d]", index))
 		}
@@ -1341,19 +1335,24 @@ func genCallOp(g *CGenContext, op byte) error {
 		return genCallGoFunc(g, op, index, &fsig)
 	}
 
-	buf := bytes.NewBuffer(nil)
-	if len(fsig.ReturnTypes) > 0 {
-		g.pushStack(g.varn)
-		buf.WriteString(fmt.Sprintf("%s%d.vu64 = %s%d(vm", VARIABLE_PREFIX, g.topStack(),
-			FUNCTION_PREFIX, index))
-	} else {
-		buf.WriteString(fmt.Sprintf("%s%d(vm", FUNCTION_PREFIX, index))
-	}
-
 	args := make([]int, len(fsig.ParamTypes))
 	for argIndex := range fsig.ParamTypes {
 		args[len(fsig.ParamTypes)-argIndex-1] = g.popStack()
 	}
+
+	buf := bytes.NewBuffer(nil)
+	if len(fsig.ReturnTypes) > 0 {
+		g.pushStack(g.varn)
+		switch fsig.ReturnTypes[0] {
+		case wasm.ValueTypeI32:
+			buf.WriteString(fmt.Sprintf("%s%d.vu32 = %s%d(vm", VARIABLE_PREFIX, g.topStack(), FUNCTION_PREFIX, index))
+		case wasm.ValueTypeI64:
+			buf.WriteString(fmt.Sprintf("%s%d.vu64 = %s%d(vm", VARIABLE_PREFIX, g.topStack(), FUNCTION_PREFIX, index))
+		}
+	} else {
+		buf.WriteString(fmt.Sprintf("%s%d(vm", FUNCTION_PREFIX, index))
+	}
+
 	for argIndex, argType := range fsig.ParamTypes {
 		vtype := ""
 		switch argType {

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime/debug"
 
 	"github.com/go-interpreter/wagon/exec/internal/compile"
 	"github.com/go-interpreter/wagon/wasm"
@@ -22,10 +23,12 @@ const (
 
 // CGenContext --
 type CGenContext struct {
-	vm        *VM
-	names     []string
-	mainIndex int
-	mainName  string
+	vm          *VM
+	names       []string
+	mainIndex   int
+	mainName    string
+	keepCSource bool
+	disableGas  bool
 
 	f            compiledFunction
 	fsig         wasm.FunctionSig
@@ -46,12 +49,13 @@ type CGenContext struct {
 }
 
 // NewCGenContext --
-func NewCGenContext(vm *VM) *CGenContext {
+func NewCGenContext(vm *VM, keepSource bool) *CGenContext {
 	g := CGenContext{
 		vm:          vm,
 		mainIndex:   -1,
 		mainName:    "thunderchain_main",
 		labelStacks: make(map[int][]int),
+		keepCSource: keepSource,
 
 		stack: make([]int, 0, 1024),
 		buf:   bytes.NewBuffer(nil),
@@ -151,6 +155,9 @@ func (g *CGenContext) op() byte {
 		if flag {
 			g.tabs++
 		}
+		if g.disableGas {
+			g.writeln("_dummy++;")
+		}
 
 		// change stack
 		if tmpStack, ok := g.labelStacks[g.pc]; ok {
@@ -173,9 +180,12 @@ func (g *CGenContext) op() byte {
 			cost, err = gasCost(g.vm)
 			if err != nil {
 				cost = GasQuickStep
+				panic(fmt.Sprintf("gasCost fail: op:0x%x %s", ins, ops.OpSignature(ins)))
 			}
 		}
-		g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { panic(vm, \"OutOfGas\"); }", cost))
+		if !g.disableGas {
+			g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { panic(vm, \"OutOfGas\"); }", cost))
+		}
 	}
 
 	g.opCount++
@@ -210,6 +220,12 @@ func (g *CGenContext) fetchInt8() int8 {
 
 var (
 	cbasic = `
+// Auto Generate. Do Not Edit.
+
+#include <stdint.h>
+#include <string.h>
+#include <stdlib.h>
+
 typedef struct {
 	void *ctx;
 	uint64_t gas_limit;
@@ -220,6 +236,7 @@ typedef struct {
 
 extern uint64_t GoFunc(vm_t*, const char*, int32_t, uint64_t*);
 extern void GoPanic(vm_t*, const char*);
+extern void GoRevert(vm_t*, const char*);
 extern void GoGrowMemory(vm_t*, int32_t);
 
 static inline void panic(vm_t *vm, const char *msg) {
@@ -266,10 +283,133 @@ static inline uint64_t rotr64( uint64_t x, uint64_t r) {
 }
 
 `
+	cenv = `
+// -----------------------------------------------------
+//  env api wrapper
+
+/*
+	if (unlikely(vm->gas_used >= vm->gas_limit))
+		panic(vm, "OutOfGas");
+
+	uint64_t cost = n * 2;
+	if (unlikely((vm->gas_limit - vm->gas_used) < cost))
+		panic(vm, "OutOfGas");
+
+	vm->gas_used += cost;
+*/
+
+static const uint64_t MAX_U64 = (uint64_t)(-1);
+static const uint32_t MAX_U32 = (uint32_t)(-1);
+
+#ifdef ENABLE_GAS
+
+static inline uint32_t to_word_size(uint32_t n) {
+	if (n > (MAX_U32 - 31))
+		return ((MAX_U32 >> 5) + 1);
+	return ((n + 31) >> 5);
+}
+
+#define USE_MEM_GAS_N(vm, n, step) {\
+	if (unlikely(vm->gas_used >= vm->gas_limit)) {\
+		panic(vm, "OutOfGas");\
+	}\
+	uint64_t cost = to_word_size(n) * step + 2;\
+	if (unlikely((vm->gas_limit - vm->gas_used) < cost)) {\
+		panic(vm, "OutOfGas");\
+	}\
+	vm->gas_used += cost;\
+}
+
+#define USE_SIM_GAS_N(vm, n) {\
+	if (unlikely(vm->gas_used >= vm->gas_limit)) {\
+		panic(vm, "OutOfGas");\
+	}\
+	uint64_t cost = n;\
+	if (unlikely((vm->gas_limit - vm->gas_used) < cost)) {\
+		panic(vm, "OutOfGas");\
+	}\
+	vm->gas_used += cost;\
+}
+#else
+#define USE_MEM_GAS_N(vm, n, step) 
+#define USE_SIM_GAS_N(vm, n) 
+#endif
+
+static inline uint32_t TCMemcpy(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memcpy(vm->mem+dst, vm->mem+src, n);
+	return dst;
+}
+
+static inline uint32_t TCMemset(vm_t *vm, uint32_t src, int c, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memset(vm->mem+src, c, n);
+	return src;
+}
+
+static inline uint32_t TCMemmove(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memmove(vm->mem+dst, vm->mem+src, n);
+	return dst;
+}
+
+static inline int TCMemcmp(vm_t *vm, uint32_t s1, uint32_t s2, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 1)
+	return memcmp(vm->mem+s1, vm->mem+s2, n);
+}
+
+static inline int TCStrcmp(vm_t *vm, uint32_t s1, uint32_t s2) {
+	uint32_t n1 = strlen(vm->mem+s1);
+	uint32_t n2 = strlen(vm->mem+s2);
+	uint32_t n = (n1 > n2) ? n1 : n2;
+	USE_MEM_GAS_N(vm, n, 1)
+	return strcmp(vm->mem+s1, vm->mem+s2);
+}
+
+static inline uint32_t TCStrcpy(vm_t *vm, uint32_t dst, uint32_t src) {
+	uint32_t n = strlen(vm->mem+src);
+	USE_MEM_GAS_N(vm, n, 3)
+	strcpy(vm->mem+dst, vm->mem+src);
+	return dst;
+}
+
+static inline uint32_t TCStrlen(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 2)
+	return strlen(vm->mem + s);
+}
+
+static inline int TCAtoi(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 20)
+	return atoi(vm->mem+s);
+}
+
+static inline int64_t TCAtoi64(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 20)
+	return atoll(vm->mem + s);
+}
+
+// TCRequire
+static inline void TCAssert(vm_t *vm, int32_t cond) {
+	USE_SIM_GAS_N(vm, 2)
+	if (cond == 0) {
+		GoRevert(vm, "");
+	}
+}
+
+// TCRequireWithMsg
+static inline void TCAssertWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
+	uint32_t n = strlen(vm->mem+msg);
+	USE_MEM_GAS_N(vm, n, 1)
+	if (cond == 0) {
+		GoRevert(vm, vm->mem+msg);
+	}
+}
+
+`
 )
 
 // Compile --
-func (g CGenContext) Compile(code []byte, path, name string) (string, error) {
+func (g *CGenContext) Compile(code []byte, path, name string) (string, error) {
 	os.MkdirAll(path, os.ModeDir)
 	in := fmt.Sprintf("%s/%s.c", path, name)
 	out := fmt.Sprintf("%s/%s.so", path, name)
@@ -279,11 +419,13 @@ func (g CGenContext) Compile(code []byte, path, name string) (string, error) {
 		return "", err
 	}
 
-	defer func() {
-		os.Remove(in)
-	}()
+	if !g.keepCSource {
+		defer func() {
+			os.Remove(in)
+		}()
+	}
 
-	cmd := exec.Command("gcc", "-fPIC", "-Os", "-shared", "-o", out, in)
+	cmd := exec.Command("gcc", "-fPIC", "-O3", "-shared", "-o", out, in)
 	cmdOut, err := cmd.CombinedOutput()
 	log.Printf("compiler output: %s", string(cmdOut))
 	return out, err
@@ -294,12 +436,11 @@ func (g *CGenContext) Generate() ([]byte, error) {
 	buf := bytes.NewBuffer(nil)
 
 	// header
-	buf.WriteString("// Auto Generate. Do Not Edit.\n\n")
-	buf.WriteString("#include <stdint.h>\n")
-	buf.WriteString("#include <string.h>\n")
-	buf.WriteString("#include <stdlib.h>\n")
-	buf.WriteString("\n")
 	buf.WriteString(cbasic)
+	if !g.disableGas {
+		buf.WriteString("\n#define ENABLE_GAS\n\n")
+	}
+	buf.WriteString(cenv)
 	buf.WriteString("\n//--------------------------\n\n")
 
 	for index, f := range g.vm.funcs {
@@ -311,11 +452,16 @@ func (g *CGenContext) Generate() ([]byte, error) {
 		}
 	}
 
-	for index, entry := range g.vm.module.Import.Entries {
-		log.Printf("[Generate] Import: index:%d, entry:%s", index, entry)
+	if g.vm.module.Import != nil {
+		for index, entry := range g.vm.module.Import.Entries {
+			log.Printf("[Generate] Import: index:%d, entry:%s", index, entry)
+		}
 	}
-	for name, entry := range g.vm.module.Export.Entries {
-		log.Printf("[Generate] Export: name:%s, entry:%s", name, entry.String())
+
+	if g.vm.module.Export != nil {
+		for name, entry := range g.vm.module.Export.Entries {
+			log.Printf("[Generate] Export: name:%s, entry:%s", name, entry.String())
+		}
 	}
 
 	// function declation
@@ -405,6 +551,8 @@ func (g *CGenContext) Generate() ([]byte, error) {
 func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			log.Printf("panic: %s", string(debug.Stack()))
+
 			switch e := r.(type) {
 			case error:
 				err = e
@@ -452,6 +600,9 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 	for i := g.f.args; i < g.f.totalLocalVars; i++ {
 		g.sprintf("uint64_t %s%d = 0;\n", LOCAL_PREFIX, i)
 	}
+	if g.disableGas {
+		g.writeln("uint8_t _dummy = 0;\n")
+	}
 
 	// generate code body
 	var op byte
@@ -463,7 +614,7 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 		case ops.Drop:
 			g.popStack()
 		case ops.Unreachable:
-			g.sprintf("panic(vm, \"unreachable\");")
+			g.sprintf("panic(vm, \"Unreachable\");")
 		case compile.OpJmp, compile.OpJmpNz, compile.OpJmpZ, ops.BrTable:
 			genJmpOp(g, op)
 		// case ops.CallIndirect: // @Todo???
@@ -710,7 +861,7 @@ func genI32BinOp(g *CGenContext, op byte) {
 	a := g.popStack()
 
 	if opStr == "/" || opStr == "%" {
-		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"div zero\"); }\n", VARIABLE_PREFIX, b, vtype)
+		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"DivZero\"); }\n", VARIABLE_PREFIX, b, vtype)
 	}
 	buf := fmt.Sprintf("%s%d.%s = (%s%d.%s %s %s%d.%s);", VARIABLE_PREFIX, c, vtype,
 		VARIABLE_PREFIX, a, vtype,
@@ -790,7 +941,7 @@ func genI64BinOp(g *CGenContext, op byte) {
 	a := g.popStack()
 
 	if opStr == "/" || opStr == "%" {
-		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"div zero\"); }", VARIABLE_PREFIX, b, vtype)
+		g.sprintf("if (unlikely(%s%d.%s == 0)) { panic(vm, \"DivZero\"); }", VARIABLE_PREFIX, b, vtype)
 	}
 	buf := fmt.Sprintf("%s%d.%s = (%s%d.%s %s %s%d.%s);", VARIABLE_PREFIX, c, vtype,
 		VARIABLE_PREFIX, a, vtype,
@@ -1033,6 +1184,147 @@ func genMemoryOp(g *CGenContext, op byte) {
 	log.Printf("[genMemoryOp] op:0x%x, %s", op, buf)
 }
 
+func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig) error {
+	buf := bytes.NewBuffer(nil)
+
+	name := g.names[index]
+	switch name {
+	case "exit":
+		buf.WriteString(fmt.Sprintf("vm->gas_used += %d; ", GasQuickStep))
+		buf.WriteString(fmt.Sprintf("return %s%d.vi32;", VARIABLE_PREFIX, g.popStack()))
+	case "abort":
+		buf.WriteString(fmt.Sprintf("vm->gas_used += %d; ", GasQuickStep))
+		buf.WriteString("panic(vm, \"Abort\"")
+	case "memcpy":
+		size := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemcpy(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst,
+			VARIABLE_PREFIX, src,
+			VARIABLE_PREFIX, size))
+	case "memset":
+		size := g.popStack()
+		c := g.popStack()
+		src := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemset(vm, %s%d.vu32, %s%d.vi32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, src,
+			VARIABLE_PREFIX, c,
+			VARIABLE_PREFIX, size))
+	case "memmove":
+		n := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemmove(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
+	case "memcmp":
+		n := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemcmp(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
+	case "strcmp":
+		s2 := g.popStack()
+		s1 := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCStrcmp(vm, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, s1, VARIABLE_PREFIX, s2))
+	case "strcpy":
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrcpy(vm, %s%d.vu32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src))
+	case "strlen":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrlen(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "atoi":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCAtoi(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "atoi64":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi64 = TCAtoi64(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "TC_Assert":
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+	case "TC_Require":
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+	case "TC_RequireWithMsg":
+		msg := g.popStack()
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssertWithMsg(vm, %s%d.vi32, %s%d.vu32);",
+			VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
+	case "TC_Revert":
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+	case "TC_RevertWithMsg":
+		msg := g.popStack()
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssertWithMsg(vm, %s%d.vi32, %s%d.vu32);",
+			VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
+	default:
+		args := make([]int, len(fsig.ParamTypes))
+		for argIndex := range fsig.ParamTypes {
+			args[len(fsig.ParamTypes)-argIndex-1] = g.popStack()
+		}
+
+		if len(args) > 0 {
+			buf.WriteString(fmt.Sprintf("uint64_t args%d[%d] = {", g.calln, len(args)))
+			for argIndex, argType := range fsig.ParamTypes {
+				if argIndex > 0 {
+					buf.WriteString(", ")
+				}
+
+				vtype := ""
+				switch argType {
+				case wasm.ValueTypeI32:
+					vtype = "vu32"
+				case wasm.ValueTypeI64:
+					vtype = "vu64"
+				default:
+					panic("invalid params type")
+				}
+				buf.WriteString(fmt.Sprintf("%s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
+			}
+			buf.WriteString("};")
+			g.writeln(buf.String())
+			buf.Reset()
+		}
+
+		if len(fsig.ReturnTypes) > 0 {
+			g.pushStack(g.varn)
+			buf.WriteString(fmt.Sprintf("%s%d.vu64 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
+		} else {
+			buf.WriteString(fmt.Sprintf("GoFunc(vm, env_func_names[%d]", index))
+		}
+
+		if len(args) > 0 {
+			buf.WriteString(fmt.Sprintf(", %d, &args%d[0]", len(args), g.calln))
+			g.calln++
+		} else {
+			buf.WriteString(fmt.Sprintf(", %d, NULL", len(args)))
+		}
+		buf.WriteString(");")
+	}
+
+	g.writeln(buf.String())
+	log.Printf("[genCallGoFunc] op:0x%x, %s", op, buf.String())
+	return nil
+}
+
 func genCallOp(g *CGenContext, op byte) error {
 	index := g.fetchUint32()
 
@@ -1045,89 +1337,36 @@ func genCallOp(g *CGenContext, op byte) error {
 		return fmt.Errorf("[genCallOp] no enough variable at stack")
 	}
 
-	isLocalFunc := false
-	if _, ok := g.vm.funcs[index].(compiledFunction); ok {
-		isLocalFunc = true
+	if _, ok := g.vm.funcs[index].(goFunction); ok {
+		return genCallGoFunc(g, op, index, &fsig)
 	}
 
-	var ret int
 	buf := bytes.NewBuffer(nil)
-
 	if len(fsig.ReturnTypes) > 0 {
 		g.pushStack(g.varn)
-
-		ret = g.popStack()
-		if isLocalFunc {
-			buf.WriteString(fmt.Sprintf("%s%d.vu64 = %s%d(vm", VARIABLE_PREFIX, ret,
-				FUNCTION_PREFIX, index))
-		} else {
-			buf.WriteString(fmt.Sprintf("%s%d.vu64 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, ret, index))
-		}
+		buf.WriteString(fmt.Sprintf("%s%d.vu64 = %s%d(vm", VARIABLE_PREFIX, g.topStack(),
+			FUNCTION_PREFIX, index))
 	} else {
-		if isLocalFunc {
-			buf.WriteString(fmt.Sprintf("%s%d(vm", FUNCTION_PREFIX, index))
-		} else {
-			buf.WriteString(fmt.Sprintf("GoFunc(vm, env_func_names[%d]", index))
-		}
+		buf.WriteString(fmt.Sprintf("%s%d(vm", FUNCTION_PREFIX, index))
 	}
 
-	goFuncArgs := bytes.NewBuffer(nil)
 	args := make([]int, len(fsig.ParamTypes))
 	for argIndex := range fsig.ParamTypes {
 		args[len(fsig.ParamTypes)-argIndex-1] = g.popStack()
 	}
-	if isLocalFunc {
-		for argIndex, argType := range fsig.ParamTypes {
-			vtype := ""
-			switch argType {
-			case wasm.ValueTypeI32:
-				vtype = "vu32"
-			case wasm.ValueTypeI64:
-				vtype = "vu64"
-			default:
-				panic("invalid params type")
-			}
-			buf.WriteString(fmt.Sprintf(", %s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
+	for argIndex, argType := range fsig.ParamTypes {
+		vtype := ""
+		switch argType {
+		case wasm.ValueTypeI32:
+			vtype = "vu32"
+		case wasm.ValueTypeI64:
+			vtype = "vu64"
+		default:
+			panic("invalid params type")
 		}
-	} else {
-		if len(args) > 0 {
-			goFuncArgs.WriteString(fmt.Sprintf("uint64_t args%d[%d] = {", g.calln, len(args)))
-			for argIndex, argType := range fsig.ParamTypes {
-				if argIndex > 0 {
-					goFuncArgs.WriteString(", ")
-				}
-
-				vtype := ""
-				switch argType {
-				case wasm.ValueTypeI32:
-					vtype = "vu32"
-				case wasm.ValueTypeI64:
-					vtype = "vu64"
-				default:
-					panic("invalid params type")
-				}
-				goFuncArgs.WriteString(fmt.Sprintf("%s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
-			}
-			goFuncArgs.WriteString("};")
-
-			buf.WriteString(fmt.Sprintf(", %d, &args%d[0]", len(args), g.calln))
-			g.calln++
-		} else {
-			buf.WriteString(fmt.Sprintf(", %d, NULL", len(args)))
-		}
+		buf.WriteString(fmt.Sprintf(", %s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
 	}
-
 	buf.WriteString(");")
-	if len(fsig.ReturnTypes) > 0 {
-		g.pushStack(ret)
-	}
-
-	if !isLocalFunc {
-		if len(args) > 0 {
-			g.writeln(goFuncArgs.String())
-			log.Printf("[genCallOp] %s", goFuncArgs.String())
-		}
-	}
 
 	g.writeln(buf.String())
 	log.Printf("[genCallOp] op:0x%x, %s", op, buf.String())

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -20,6 +19,15 @@ const (
 	VARIABLE_PREFIX = "v"
 	LABEL_PREFIX    = "L_"
 )
+
+var (
+	log wasm.Logger
+)
+
+// SetCGenLogger --
+func SetCGenLogger(l wasm.Logger) {
+	log = l
+}
 
 // CGenContext --
 type CGenContext struct {
@@ -175,8 +183,13 @@ func (g *CGenContext) op() byte {
 		var err error
 		cost := GasQuickStep
 
-		gasCost := g.vm.opSet[ins].gasCost
-		if gasCost != nil {
+		switch ins {
+		case ops.Return:
+			cost = 0
+		case compile.OpJmp, compile.OpJmpZ, compile.OpJmpNz, ops.BrTable, compile.OpDiscard, compile.OpDiscardPreserveTop, ops.WagonNativeExec:
+			cost = GasQuickStep
+		default:
+			gasCost := g.vm.opSet[ins].gasCost
 			cost, err = gasCost(g.vm)
 			if err != nil {
 				cost = GasQuickStep
@@ -184,7 +197,9 @@ func (g *CGenContext) op() byte {
 			}
 		}
 		if !g.disableGas {
-			g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { panic(vm, \"OutOfGas\"); }", cost))
+			// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
+			g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
+			// g.writeln(fmt.Sprintf("printf(\"op:%s, gas:%d\\n\");", ops.OpSignature(ins), cost))
 		}
 	}
 
@@ -1179,11 +1194,13 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 	name := g.names[index]
 	switch name {
 	case "exit":
-		buf.WriteString(fmt.Sprintf("vm->gas_used += %d; ", GasQuickStep))
+		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }",
+			GasQuickStep, GasQuickStep))
 		buf.WriteString(fmt.Sprintf("return %s%d.vi32;", VARIABLE_PREFIX, g.popStack()))
 	case "abort":
-		buf.WriteString(fmt.Sprintf("vm->gas_used += %d; ", GasQuickStep))
-		buf.WriteString("panic(vm, \"Abort\"")
+		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }",
+			GasQuickStep, GasQuickStep))
+		buf.WriteString("panic(vm, \"Abort\");")
 	case "memcpy":
 		size := g.popStack()
 		src := g.popStack()
@@ -1554,4 +1571,8 @@ func genJmpOp(g *CGenContext, op byte) {
 
 	g.writeln(buf.String())
 	log.Printf("[genJumpOp] op:0x%x, %s", op, buf.String())
+}
+
+func init() {
+	log = wasm.NoopLogger{}
 }

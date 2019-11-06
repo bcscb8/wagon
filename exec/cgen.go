@@ -73,6 +73,16 @@ func NewCGenContext(vm *VM, keepSource bool) *CGenContext {
 	return &g
 }
 
+// DisableGas --
+func (g *CGenContext) DisableGas(s bool) {
+	g.disableGas = s
+}
+
+// EnableComment --
+func (g *CGenContext) EnableComment(s bool) {
+	g.enableComment = s
+}
+
 func (g *CGenContext) resetF(f compiledFunction, id uint64) {
 	g.f = f
 	g.id = id
@@ -467,7 +477,7 @@ func (g *CGenContext) Generate() ([]byte, error) {
 		if _, ok := f.(goFunction); ok {
 			log.Printf("[Generate] goFunction: index:%d, name:%s", index, name)
 		} else {
-			log.Printf("[Generate] local Function: index:%d, name:%s", index, name)
+			log.Printf("[Generate] localFunction: index:%d, name:%s", index, name)
 		}
 	}
 

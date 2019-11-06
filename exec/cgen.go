@@ -31,12 +31,13 @@ func SetCGenLogger(l wasm.Logger) {
 
 // CGenContext --
 type CGenContext struct {
-	vm          *VM
-	names       []string
-	mainIndex   int
-	mainName    string
-	keepCSource bool
-	disableGas  bool
+	vm            *VM
+	names         []string
+	mainIndex     int
+	mainName      string
+	keepCSource   bool
+	disableGas    bool
+	enableComment bool
 
 	f            compiledFunction
 	fsig         wasm.FunctionSig
@@ -196,15 +197,22 @@ func (g *CGenContext) op() byte {
 				panic(fmt.Sprintf("gasCost fail: op:0x%x %s", ins, ops.OpSignature(ins)))
 			}
 		}
-		if !g.disableGas {
-			// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
-			g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
-			// g.writeln(fmt.Sprintf("printf(\"op:%s, gas:%d\\n\");", ops.OpSignature(ins), cost))
-		}
+		g.genGasChecker(ins, cost)
 	}
 
 	g.opCount++
 	return ins
+}
+
+func (g *CGenContext) genGasChecker(op byte, cost uint64) {
+	if !g.disableGas {
+		if g.enableComment {
+			g.writeln(fmt.Sprintf("// %d:%d, %s", g.pc, g.opCount, ops.OpSignature(op)))
+		}
+		// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
+		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit - vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
+		// g.writeln(fmt.Sprintf("printf(\"op:%s, gas:%d\\n\");", ops.OpSignature(op), cost))
+	}
 }
 
 func (g *CGenContext) fetchUint32() uint32 {
@@ -252,6 +260,7 @@ typedef struct {
 extern uint64_t GoFunc(vm_t*, const char*, int32_t, uint64_t*);
 extern void GoPanic(vm_t*, const char*);
 extern void GoRevert(vm_t*, const char*);
+extern void GoExit(vm_t*, int32_t);
 extern void GoGrowMemory(vm_t*, int32_t);
 
 static inline void panic(vm_t *vm, const char *msg) {
@@ -284,17 +293,23 @@ static inline uint64_t clz64(uint64_t x) {
 static inline uint64_t ctz64(uint64_t x) {
 	return __builtin_ctzll(x);
 }
-static inline uint64_t rotl32( uint32_t x, uint32_t r) {
-  return (x << r) | (x >> (32 - r % 32));
+static inline uint64_t rotl32(uint32_t x, uint32_t r) {
+	return (x << r) | (x >> (32 - r % 32));
 }
-static inline uint64_t rotl64( uint64_t x, uint64_t r) {
-  return (x << r) | (x >> (64 - r % 64));
+static inline uint64_t rotl64(uint64_t x, uint64_t r) {
+	return (x << r) | (x >> (64 - r % 64));
 }
-static inline uint64_t rotr32( uint32_t x, uint32_t r) {
-  return (x >> r) | (x << (32 - r % 32));
+static inline uint64_t rotr32(uint32_t x, uint32_t r) {
+	return (x >> r) | (x << (32 - r % 32));
 }
-static inline uint64_t rotr64( uint64_t x, uint64_t r) {
-  return (x >> r) | (x << (64 - r % 64));
+static inline uint64_t rotr64(uint64_t x, uint64_t r) {
+	return (x >> r) | (x << (64 - r % 64));
+}
+static inline uint32_t popcnt32(uint32_t x) {
+	return (uint32_t)(__builtin_popcountl(x));
+}
+static inline uint32_t popcnt64(uint64_t x) {
+	return (uint32_t)(__builtin_popcountll(x));
 }
 
 `
@@ -658,7 +673,7 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 			genBinFuncOp(g, op)
 		case ops.I32Eqz, ops.I64Eqz:
 			genEqzOp(g, op)
-		case ops.I32Clz, ops.I32Ctz, ops.I64Clz, ops.I64Ctz, ops.I32Popcnt:
+		case ops.I32Clz, ops.I32Ctz, ops.I64Clz, ops.I64Ctz, ops.I32Popcnt, ops.I64Popcnt:
 			genUnFuncOp(g, op)
 		case ops.I32WrapI64, ops.I64ExtendSI32, ops.I64ExtendUI32:
 			genConvertOp(g, op)
@@ -1001,12 +1016,18 @@ func genUnFuncOp(g *CGenContext, op byte) {
 		fName = "clz32"
 	case ops.I32Ctz:
 		fName = "ctz32"
+	case ops.I32Popcnt:
+		fName = "popcnt32"
 	case ops.I64Clz:
 		fName = "clz64"
+		vtype = "vu64"
 	case ops.I64Ctz:
 		fName = "ctz64"
+		vtype = "vu64"
+	case ops.I64Popcnt:
+		fName = "popcnt64"
+		vtype = "vu64"
 	default:
-		// case ops.I32Popcnt:
 		panic(fmt.Sprintf("[genUnFuncOp] invalid op: 0x%x", op))
 	}
 
@@ -1194,12 +1215,10 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 	name := g.names[index]
 	switch name {
 	case "exit":
-		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }",
-			GasQuickStep, GasQuickStep))
-		buf.WriteString(fmt.Sprintf("return %s%d.vi32;", VARIABLE_PREFIX, g.popStack()))
+		g.genGasChecker(op, GasQuickStep)
+		buf.WriteString(fmt.Sprintf("GoExit(vm, %s%d.vi32);", VARIABLE_PREFIX, g.popStack()))
 	case "abort":
-		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit-vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }",
-			GasQuickStep, GasQuickStep))
+		g.genGasChecker(op, GasQuickStep)
 		buf.WriteString("panic(vm, \"Abort\");")
 	case "memcpy":
 		size := g.popStack()

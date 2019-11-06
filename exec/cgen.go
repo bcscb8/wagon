@@ -190,7 +190,7 @@ func (g *CGenContext) op() byte {
 	ins := g.f.code[g.pc]
 	g.pc++
 
-	if ins != ops.Call && ins != ops.GrowMemory {
+	if ins != ops.Call {
 		var err error
 		cost := GasQuickStep
 
@@ -1204,13 +1204,10 @@ func genMemoryOp(g *CGenContext, op byte) {
 		buf = fmt.Sprintf("%s%d.vi32 = vm->pages;", VARIABLE_PREFIX, g.topStack())
 	case ops.GrowMemory:
 		_ = g.fetchInt8()
+		n := g.popStack()
 		g.pushStack(g.varn)
-		ret := g.popStack()
-
-		buf = fmt.Sprintf("%s%d.vi32 = vm->pages; GoGrowMemory(vm, %s%d.vi32);",
-			VARIABLE_PREFIX, ret,
-			VARIABLE_PREFIX, g.popStack())
-		g.pushStack(ret)
+		buf = fmt.Sprintf("%s%d.vi32 = vm->pages; if (likely(%s%d.vi32 > vm->pages)) {GoGrowMemory(vm, %s%d.vi32);}",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, n, VARIABLE_PREFIX, n)
 	default:
 		panic(fmt.Sprintf("[genMemoryOp] invalid op: 0x%x", op))
 	}

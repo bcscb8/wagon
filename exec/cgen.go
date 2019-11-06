@@ -219,8 +219,9 @@ func (g *CGenContext) genGasChecker(op byte, cost uint64) {
 		if g.enableComment {
 			g.writeln(fmt.Sprintf("// %d:%d, %s", g.pc, g.opCount, ops.OpSignature(op)))
 		}
-		// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas_limit)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
-		g.writeln(fmt.Sprintf("if (likely(vm->gas_limit >= vm->gas_used) && likely((vm->gas_limit - vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
+		// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
+		g.writeln(fmt.Sprintf("if (likely(vm->gas >= %d)) {vm->gas -= %d; vm->gas_used += %d;} else {panic(vm, \"OutOfGas\");}", cost, cost, cost))
+		// g.writeln(fmt.Sprintf("if (likely(vm->gas >= vm->gas_used) && likely((vm->gas - vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
 		// g.writeln(fmt.Sprintf("printf(\"op:%s, gas:%d\\n\");", ops.OpSignature(op), cost))
 	}
 }
@@ -261,7 +262,7 @@ var (
 
 typedef struct {
 	void *ctx;
-	uint64_t gas_limit;
+	uint64_t gas;
 	uint64_t gas_used;
 	int32_t pages;
 	uint8_t *mem;
@@ -339,26 +340,25 @@ static inline uint32_t to_word_size(uint32_t n) {
 }
 
 #define USE_MEM_GAS_N(vm, n, step) {\
-	if (unlikely(vm->gas_used >= vm->gas_limit)) {\
-		panic(vm, "OutOfGas");\
-	}\
 	uint64_t cost = to_word_size(n) * step + 2;\
-	if (unlikely((vm->gas_limit - vm->gas_used) < cost)) {\
+	if (likely(vm->gas >= cost)) {\
+		vm->gas -= cost;\
+		vm->gas_used += cost;\
+	} else {\
 		panic(vm, "OutOfGas");\
 	}\
-	vm->gas_used += cost;\
 }
 
 #define USE_SIM_GAS_N(vm, n) {\
-	if (unlikely(vm->gas_used >= vm->gas_limit)) {\
-		panic(vm, "OutOfGas");\
-	}\
 	uint64_t cost = n;\
-	if (unlikely((vm->gas_limit - vm->gas_used) < cost)) {\
+	if (likely(vm->gas >= cost)) {\
+		vm->gas -= cost;\
+		vm->gas_used += cost;\
+	} else {\
 		panic(vm, "OutOfGas");\
 	}\
-	vm->gas_used += cost;\
 }
+
 #else
 #define USE_MEM_GAS_N(vm, n, step) 
 #define USE_SIM_GAS_N(vm, n) 

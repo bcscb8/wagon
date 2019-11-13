@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -40,7 +41,7 @@ type CGenContext struct {
 	enableComment bool
 
 	f            compiledFunction
-	fsig         wasm.FunctionSig
+	fsig         *wasm.FunctionSig
 	id           uint64
 	insMetas     []compile.InstructionMetadata
 	branchTables []*compile.BranchTable
@@ -101,8 +102,7 @@ func (g *CGenContext) resetF(f compiledFunction, id uint64) {
 	g.buf.Reset()
 	g.tabs = 0
 
-	tIndex := g.vm.module.Function.Types[g.id]
-	g.fsig = g.vm.module.Types.Entries[tIndex]
+	g.fsig = g.vm.module.FunctionIndexSpace[id].Sig
 }
 
 func (g *CGenContext) putTabs() {
@@ -163,6 +163,7 @@ func (g *CGenContext) isEnd() bool {
 }
 
 func (g *CGenContext) op() byte {
+	ins := g.f.code[g.pc]
 	if label, ok := g.labelTables[g.pc]; ok {
 		// write label
 		flag := false
@@ -176,6 +177,10 @@ func (g *CGenContext) op() byte {
 		}
 		if g.disableGas {
 			g.writeln("_dummy++;")
+		} else {
+			if ins == ops.Call {
+				g.writeln("vm->gas_used += 0;")
+			}
 		}
 
 		// change stack
@@ -187,9 +192,7 @@ func (g *CGenContext) op() byte {
 		}
 	}
 
-	ins := g.f.code[g.pc]
 	g.pc++
-
 	if ins != ops.Call {
 		var err error
 		cost := GasQuickStep
@@ -201,10 +204,16 @@ func (g *CGenContext) op() byte {
 			cost = GasQuickStep
 		default:
 			gasCost := g.vm.opSet[ins].gasCost
-			cost, err = gasCost(g.vm)
-			if err != nil {
-				cost = GasQuickStep
-				panic(fmt.Sprintf("gasCost fail: op:0x%x %s", ins, ops.OpSignature(ins)))
+			if gasCost == nil {
+				// panic(fmt.Sprintf("gasCost nil: op:0x%x %s", ins, ops.OpSignature(ins)))
+				log.Printf("gasCost nil: op:0x%x %s", ins, ops.OpSignature(ins))
+				g.sprintf("panic(vm, \"InvalidIns: 0x%x  %s\");\n", ins, ops.OpSignature(ins))
+			} else {
+				cost, err = gasCost(g.vm)
+				if err != nil {
+					cost = GasQuickStep
+					panic(fmt.Sprintf("gasCost fail: op:0x%x %s", ins, ops.OpSignature(ins)))
+				}
 			}
 		}
 		g.genGasChecker(ins, cost)
@@ -215,10 +224,10 @@ func (g *CGenContext) op() byte {
 }
 
 func (g *CGenContext) genGasChecker(op byte, cost uint64) {
+	if g.enableComment {
+		g.writeln(fmt.Sprintf("// %d:%d, %s", g.pc, g.opCount, ops.OpSignature(op)))
+	}
 	if !g.disableGas {
-		if g.enableComment {
-			g.writeln(fmt.Sprintf("// %d:%d, %s", g.pc, g.opCount, ops.OpSignature(op)))
-		}
 		// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
 		g.writeln(fmt.Sprintf("if (likely(vm->gas >= %d)) {vm->gas -= %d; vm->gas_used += %d;} else {panic(vm, \"OutOfGas\");}", cost, cost, cost))
 		// g.writeln(fmt.Sprintf("if (likely(vm->gas >= vm->gas_used) && likely((vm->gas - vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
@@ -252,6 +261,14 @@ func (g *CGenContext) fetchInt8() int8 {
 	return i
 }
 
+func (g *CGenContext) fetchFloat32() float32 {
+	return math.Float32frombits(g.fetchUint32())
+}
+
+func (g *CGenContext) fetchFloat64() float64 {
+	return math.Float64frombits(g.fetchUint64())
+}
+
 var (
 	cbasic = `
 // Auto Generate. Do Not Edit.
@@ -266,6 +283,10 @@ typedef struct {
 	uint64_t gas_used;
 	int32_t pages;
 	uint8_t *mem;
+
+	// internal temp member
+	void *_ff;
+	uint32_t _findex;
 } vm_t;
 
 extern uint64_t GoFunc(vm_t*, const char*, int32_t, uint64_t*);
@@ -287,6 +308,8 @@ typedef union value {
 	int16_t 	vi16;
 	uint8_t 	vu8;
 	int8_t 		vi8;
+	float   	vf32;
+	double 		vf64;
 } value_t;
 
 #define likely(x)       __builtin_expect((x),1)
@@ -328,8 +351,8 @@ static inline uint32_t popcnt64(uint64_t x) {
 // -----------------------------------------------------
 //  env api wrapper
 
-static const uint64_t MAX_U64 = (uint64_t)(-1);
-static const uint32_t MAX_U32 = (uint32_t)(-1);
+#define MAX_U64 (uint64_t)(0xFFFFFFFFFFFFFFFF)
+#define MAX_U32 (uint32_t)(0xFFFFFFFF)
 
 #ifdef ENABLE_GAS
 
@@ -388,36 +411,56 @@ static inline int TCMemcmp(vm_t *vm, uint32_t s1, uint32_t s2, uint32_t n) {
 }
 
 static inline int TCStrcmp(vm_t *vm, uint32_t s1, uint32_t s2) {
-	uint32_t n1 = strlen(vm->mem+s1);
-	uint32_t n2 = strlen(vm->mem+s2);
+#ifdef ENABLE_GAS
+	uint32_t n1 = strlen((const char *)(vm->mem+s1));
+	uint32_t n2 = strlen((const char *)(vm->mem+s2));
 	uint32_t n = (n1 > n2) ? n1 : n2;
 	USE_MEM_GAS_N(vm, n, 1)
-	return strcmp(vm->mem+s1, vm->mem+s2);
+#endif
+	return strcmp((const char *)(vm->mem+s1), (const char *)(vm->mem+s2));
 }
 
 static inline uint32_t TCStrcpy(vm_t *vm, uint32_t dst, uint32_t src) {
-	uint32_t n = strlen(vm->mem+src);
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+src));
 	USE_MEM_GAS_N(vm, n, 3)
-	strcpy(vm->mem+dst, vm->mem+src);
+#endif
+	strcpy((char *)(vm->mem+dst), (const char *)(vm->mem+src));
 	return dst;
 }
 
 static inline uint32_t TCStrlen(vm_t *vm, uint32_t s) {
 	USE_SIM_GAS_N(vm, 2)
-	return strlen(vm->mem + s);
+	return strlen((const char *)(vm->mem + s));
 }
 
 static inline int TCAtoi(vm_t *vm, uint32_t s) {
 	USE_SIM_GAS_N(vm, 20)
-	return atoi(vm->mem+s);
+	return atoi((const char *)(vm->mem+s));
 }
 
 static inline int64_t TCAtoi64(vm_t *vm, uint32_t s) {
 	USE_SIM_GAS_N(vm, 20)
-	return atoll(vm->mem + s);
+	return atoll((const char *)(vm->mem + s));
 }
 
-// TCRequire
+static inline void TCRequire(vm_t *vm, int32_t cond) {
+	USE_SIM_GAS_N(vm, 2)
+	if (cond == 0) {
+		GoRevert(vm, "");
+	}
+}
+
+static inline void TCRequireWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+msg));
+	USE_MEM_GAS_N(vm, n, 1)
+#endif
+	if (cond == 0) {
+		GoRevert(vm, (const char *)(vm->mem+msg));
+	}
+}
+
 static inline void TCAssert(vm_t *vm, int32_t cond) {
 	USE_SIM_GAS_N(vm, 2)
 	if (cond == 0) {
@@ -425,13 +468,27 @@ static inline void TCAssert(vm_t *vm, int32_t cond) {
 	}
 }
 
-// TCRequireWithMsg
-static inline void TCAssertWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
-	uint32_t n = strlen(vm->mem+msg);
+static inline void TCRevert(vm_t *vm) {
+	USE_SIM_GAS_N(vm, 2)
+	GoRevert(vm, "");
+}
+
+static inline void TCRevertWithMsg(vm_t *vm, uint32_t msg) {
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+msg));
 	USE_MEM_GAS_N(vm, n, 1)
-	if (cond == 0) {
-		GoRevert(vm, vm->mem+msg);
-	}
+#endif
+	GoRevert(vm, (const char *)(vm->mem+msg));
+}
+
+static inline void TCAbort(vm_t *vm) {
+	USE_SIM_GAS_N(vm, 2)
+	panic(vm, "Abort");
+}
+
+static inline void TCExit(vm_t *vm, int32_t n) {
+	USE_SIM_GAS_N(vm, 2)
+	GoExit(vm, n);
 }
 
 `
@@ -454,7 +511,7 @@ func (g *CGenContext) Compile(code []byte, path, name string) (string, error) {
 		}()
 	}
 
-	cmd := exec.Command("gcc", "-fPIC", "-O3", "-shared", "-o", out, in)
+	cmd := exec.Command("gcc", "-fPIC", "-Ofast", "-shared", "-o", out, in)
 	cmdOut, err := cmd.CombinedOutput()
 	log.Printf("compiler output: %s", string(cmdOut))
 	return out, err
@@ -507,44 +564,20 @@ func (g *CGenContext) Generate() ([]byte, error) {
 			continue
 		}
 
-		if module.FunctionIndexSpace[index].Name == g.mainName {
+		entry := module.FunctionIndexSpace[index]
+		if entry.Name == g.mainName {
 			g.mainIndex = index
 			log.Printf("skip thunderchain_main: index=%d", index)
 			continue
 		}
-		log.Printf("[Generate] declation: %s", module.FunctionIndexSpace[index].Name)
-
-		tIndex := module.Function.Types[index]
-		fsig := module.Types.Entries[tIndex]
-
-		buf.WriteString("static ")
-		if len(fsig.ReturnTypes) > 0 {
-			switch fsig.ReturnTypes[0] {
-			case wasm.ValueTypeI32:
-				buf.WriteString("uint32_t ")
-			case wasm.ValueTypeI64:
-				buf.WriteString("uint64_t ")
-			default:
-				log.Printf("[Generate] invalid return_type(%s): func_index:%d", fsig.ReturnTypes[0].String(), index)
-				return buf.Bytes(), fmt.Errorf("invalid return type")
-			}
-		} else {
-			buf.WriteString("void ")
+		if entry.Name != "" {
+			log.Printf("[Generate] declation: %s", module.FunctionIndexSpace[index].Name)
 		}
-		buf.WriteString(fmt.Sprintf("%s%d(vm_t*", FUNCTION_PREFIX, index))
 
-		for argIndex, argType := range fsig.ParamTypes {
-			vtype := ""
-			switch argType {
-			case wasm.ValueTypeI32:
-				vtype = "uint32_t"
-			case wasm.ValueTypeI64:
-				vtype = "uint64_t"
-			default:
-				log.Printf("[Generate] invalid param_type(%s): func_index:%d, param_index:%d", argType.String(), index, argIndex)
-				return buf.Bytes(), fmt.Errorf("invalid params type")
-			}
-			buf.WriteString(fmt.Sprintf(", %s", vtype))
+		fsig := entry.Sig
+		buf.WriteString(fmt.Sprintf("static %s %s%d(vm_t*", fsigReturnCType(fsig), FUNCTION_PREFIX, index))
+		for _, argType := range fsig.ParamTypes {
+			buf.WriteString(fmt.Sprintf(", %s", valueTypeToCType(argType)))
 		}
 		buf.WriteString(");\n")
 	}
@@ -560,14 +593,112 @@ func (g *CGenContext) Generate() ([]byte, error) {
 	}
 	buf.WriteString("};\n")
 	buf.WriteString("\n//--------------------------\n\n")
+	log.Printf("env names: %v", names)
+
+	// static uint64_t globals[] = {};
+	buf.WriteString("\nstatic uint64_t globals[] = {")
+	for i, global := range module.GlobalIndexSpace {
+		val, err := module.ExecInitExpr(global.Init)
+		if err != nil {
+			log.Printf("[Generate]: module.ExecInitExpr fail: %s", err)
+			return buf.Bytes(), err
+		}
+
+		if i > 0 {
+			buf.WriteString(", ")
+		}
+		switch v := val.(type) {
+		case int32, int64:
+			buf.WriteString(fmt.Sprintf("0x%x", v))
+		default:
+			log.Printf("[Generate]: invalid global type")
+			panic("")
+		}
+	}
+	buf.WriteString("};\n")
+
+	// static uint32_t table_index_space[] = {}
+	buf.WriteString("\nstatic uint32_t table_index_space[] = {")
+	for i, val := range module.TableIndexSpace[0] {
+		if i > 0 {
+			buf.WriteString(", ")
+		}
+		buf.WriteString(fmt.Sprintf("%d", val))
+	}
+	buf.WriteString("};\n")
+
+	// static const uint32_t total_funcs_cnt = 100;
+	buf.WriteString(fmt.Sprintf("\nstatic const uint32_t total_funcs_cnt = %d;\n", len(g.vm.funcs)))
+
+	// static void* funcs_addr_table[] = {xxx, xxx};
+	buf.WriteString("\nstatic void* funcs_addr_table[] = {")
+	for index, f := range g.vm.funcs {
+		if index > 0 {
+			buf.WriteString(", ")
+		}
+
+		if index == g.mainIndex {
+			buf.WriteString("NULL")
+			continue
+		}
+
+		if _, ok := f.(compiledFunction); ok {
+			buf.WriteString(fmt.Sprintf("%s%d", FUNCTION_PREFIX, index))
+			continue
+		}
+
+		name := g.vm.module.FunctionIndexSpace[index].Name
+		switch name {
+		case "exit":
+			buf.WriteString("TCExit")
+		case "abort":
+			buf.WriteString("TCAbort")
+		case "memcpy":
+			buf.WriteString("TCMemcpy")
+		case "memset":
+			buf.WriteString("TCMemset")
+		case "memmove":
+			buf.WriteString("TCMemmove")
+		case "memcmp":
+			buf.WriteString("TCMemcmp")
+		case "strcmp":
+			buf.WriteString("TCStrcmp")
+		case "strcpy":
+			buf.WriteString("TCStrcpy")
+		case "strlen":
+			buf.WriteString("TCStrlen")
+		case "atoi":
+			buf.WriteString("TCAtoi")
+		case "atoi64":
+			buf.WriteString("TCAtoi64")
+		case "TC_Assert":
+			buf.WriteString("TCAssert")
+		case "TC_Require":
+			buf.WriteString("TCRequire")
+		case "TC_RequireWithMsg":
+			buf.WriteString("TCRequireWithMsg")
+		case "TC_Revert":
+			buf.WriteString("TCRevert")
+		case "TC_RevertWithMsg":
+			buf.WriteString("TCRevertWithMsg")
+		default:
+			buf.WriteString("NULL")
+		}
+	}
+	buf.WriteString("};\n")
+
+	// ---------------------------
 
 	// function code
+	buf.WriteString("\n")
 	for index, f := range g.vm.funcs {
 		cf, ok := f.(compiledFunction)
 		if ok {
 			g.resetF(cf, uint64(index))
 			code, err := g.doGenerateF()
 			if err != nil {
+				log.Printf("[Generate] doGenerateF %dth fail: %s", index, string(code))
+				// log.Printf("buffer: %s", buf.String())
 				return buf.Bytes(), err
 			}
 			buf.Write(code)
@@ -581,6 +712,7 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic: %s", string(debug.Stack()))
+			log.Printf("Func %dth code: %s", g.id, g.buf.String())
 
 			switch e := r.(type) {
 			case error:
@@ -597,30 +729,9 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 	}
 
 	fsig := g.fsig
-	if len(fsig.ReturnTypes) > 0 {
-		switch fsig.ReturnTypes[0] {
-		case wasm.ValueTypeI32:
-			g.sprintf("uint32_t %s(vm_t *vm", funcName)
-		case wasm.ValueTypeI64:
-			g.sprintf("uint64_t %s(vm_t *vm", funcName)
-		default:
-			panic("invalid return type")
-		}
-	} else {
-		g.sprintf("void %s(vm_t *vm", funcName)
-	}
-
+	g.sprintf("%s %s(vm_t *vm", fsigReturnCType(fsig), funcName)
 	for argIndex, argType := range fsig.ParamTypes {
-		vtype := ""
-		switch argType {
-		case wasm.ValueTypeI32:
-			vtype = "uint32_t"
-		case wasm.ValueTypeI64:
-			vtype = "uint64_t"
-		default:
-			panic("invalid params type")
-		}
-		g.sprintf(",%s %s%d", vtype, LOCAL_PREFIX, argIndex)
+		g.sprintf(",%s %s%d", valueTypeToCType(argType), LOCAL_PREFIX, argIndex)
 	}
 	g.writes(") {\n")
 	g.tabs++
@@ -637,7 +748,7 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 	var op byte
 	for !g.isEnd() {
 		op = g.op()
-		log.Printf("Generate [%d:%d] op: %s", g.pc, len(g.f.code), ops.OpSignature(op))
+		log.Printf("Generate %dth [%d:%d] op: %s", g.id, g.pc, len(g.f.code), ops.OpSignature(op))
 		switch op {
 		case ops.Nop:
 		case ops.Drop:
@@ -646,15 +757,16 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 			g.sprintf("panic(vm, \"Unreachable\");")
 		case compile.OpJmp, compile.OpJmpNz, compile.OpJmpZ, ops.BrTable:
 			genJmpOp(g, op)
-		// case ops.CallIndirect: // @Todo???
+		case ops.CallIndirect:
+			err = genCallIndirectOp(g, op)
 		case ops.Call:
 			err = genCallOp(g, op)
 		case compile.OpDiscard:
-			n := g.fetchUint32()
+			n := g.fetchUint64()
 			g.discardStack(int(n))
 		case compile.OpDiscardPreserveTop:
 			top := g.topStack()
-			n := g.fetchUint32()
+			n := g.fetchUint64()
 			g.discardStack(int(n))
 			g.pushStack(top)
 		case ops.Return:
@@ -693,6 +805,18 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 		case ops.I64Store, ops.I64Store32, ops.I64Store16, ops.I64Store8,
 			ops.I32Store, ops.I32Store16, ops.I32Store8:
 			genStoreOp(g, op)
+		case ops.F64Load, ops.F32Load, ops.F64Store, ops.F32Store, ops.F64Const, ops.F32Const,
+			ops.F64Add, ops.F64Sub, ops.F64Mul, ops.F64Div, ops.F64Eq, ops.F64Ne, ops.F64Le, ops.F64Lt, ops.F64Ge, ops.F64Gt, ops.F64Min, ops.F64Max, ops.F64Copysign,
+			ops.F32Add, ops.F32Sub, ops.F32Mul, ops.F32Div, ops.F32Eq, ops.F32Ge, ops.F32Ne, ops.F32Gt, ops.F32Lt, ops.F32Le, ops.F32Min, ops.F32Max, ops.F32Copysign,
+			ops.F32Abs, ops.F32Neg, ops.F32Ceil, ops.F32Floor, ops.F32Trunc, ops.F32Nearest, ops.F32Sqrt,
+			ops.F64Abs, ops.F64Neg, ops.F64Ceil, ops.F64Floor, ops.F64Trunc, ops.F64Nearest, ops.F64Sqrt,
+			ops.I32TruncSF32, ops.I32TruncSF64, ops.I32TruncUF32, ops.I32TruncUF64,
+			ops.I64TruncSF32, ops.I64TruncUF32, ops.I64TruncSF64, ops.I64TruncUF64,
+			ops.I32ReinterpretF32, ops.I64ReinterpretF64, ops.F32ReinterpretI32, ops.F64ReinterpretI64,
+			ops.F32ConvertSI32, ops.F32ConvertUI32, ops.F32ConvertSI64, ops.F32ConvertUI64, ops.F32DemoteF64,
+			ops.F64ConvertSI32, ops.F64ConvertSI64, ops.F64ConvertUI32, ops.F64ConvertUI64, ops.F64PromoteF32:
+			genFloatOp(g, op)
+
 		default:
 			err = fmt.Errorf("Not Support op(0x%x): %s", op, ops.OpSignature(op))
 		}
@@ -718,11 +842,11 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 func genReturnOp(g *CGenContext, op byte) {
 	var buf string
 	if g.f.returns {
-		switch g.fsig.ReturnTypes[0] {
-		case wasm.ValueTypeI32:
-			buf = fmt.Sprintf("return %s%d.vu32;", VARIABLE_PREFIX, g.popStack())
-		case wasm.ValueTypeI64:
-			buf = fmt.Sprintf("return %s%d.vu64;", VARIABLE_PREFIX, g.popStack())
+		if g.lenStack() > 0 {
+			buf = fmt.Sprintf("return %s%d.%s;", VARIABLE_PREFIX, g.topStack(), valueTypeToUnionType(g.fsig.ReturnTypes[0]))
+		} else {
+			log.Printf("[genReturnOp]: lackof return value")
+			buf = "return 0;"
 		}
 	} else {
 		buf = "return;"
@@ -773,10 +897,10 @@ func genConstOp(g *CGenContext, op byte) {
 	switch op {
 	case ops.I32Const:
 		val := g.fetchUint32()
-		buf = fmt.Sprintf("%s%d.vu32 = %d;", VARIABLE_PREFIX, g.topStack(), val)
+		buf = fmt.Sprintf("%s%d.vu32 = %dU;", VARIABLE_PREFIX, g.topStack(), val)
 	case ops.I64Const:
 		val := g.fetchUint64()
-		buf = fmt.Sprintf("%s%d.vu64 = %d;", VARIABLE_PREFIX, g.topStack(), val)
+		buf = fmt.Sprintf("%s%d.vu64 = %dULL;", VARIABLE_PREFIX, g.topStack(), val)
 	}
 
 	g.writeln(buf)
@@ -784,18 +908,15 @@ func genConstOp(g *CGenContext, op byte) {
 }
 
 func genSelectOp(g *CGenContext, op byte) {
-	g.pushStack(g.varn)
-
-	v := g.popStack()
 	cond := g.popStack()
 	v2 := g.popStack()
 	v1 := g.popStack()
-	buf := fmt.Sprintf("%s%d = %s%d.vu32 ? %s%d : %s%d;", VARIABLE_PREFIX, v,
+	g.pushStack(g.varn) // new v
+	buf := fmt.Sprintf("%s%d = %s%d.vu32 ? %s%d : %s%d;", VARIABLE_PREFIX, g.topStack(),
 		VARIABLE_PREFIX, cond,
 		VARIABLE_PREFIX, v1,
 		VARIABLE_PREFIX, v2)
 	g.writeln(buf)
-	g.pushStack(v)
 
 	log.Printf("[genSelectOp] op:0x%x, %s", op, buf)
 }
@@ -803,17 +924,15 @@ func genSelectOp(g *CGenContext, op byte) {
 func genEqzOp(g *CGenContext, op byte) {
 	var buf string
 
-	g.pushStack(g.varn)
-	x := g.popStack()
 	a := g.popStack()
+	g.pushStack(g.varn)
 	switch op {
 	case ops.I32Eqz:
-		buf = fmt.Sprintf("%s%d.vi32 = (%s%d.vu32 == 0);", VARIABLE_PREFIX, x, VARIABLE_PREFIX, a)
+		buf = fmt.Sprintf("%s%d.vi32 = (%s%d.vu32 == 0);", VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, a)
 	case ops.I64Eqz:
-		buf = fmt.Sprintf("%s%d.vi64 = (%s%d.vu64 == 0);", VARIABLE_PREFIX, x, VARIABLE_PREFIX, a)
+		buf = fmt.Sprintf("%s%d.vi64 = (%s%d.vu64 == 0);", VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, a)
 	}
 	g.writeln(buf)
-	g.pushStack(x)
 
 	log.Printf("[genEqzOp] op:0x%x, %s", op, buf)
 }
@@ -1056,27 +1175,29 @@ func genUnFuncOp(g *CGenContext, op byte) {
 func genConvertOp(g *CGenContext, op byte) {
 	dstType := ""
 	srcType := ""
+	_type := ""
 
 	switch op {
 	case ops.I32WrapI64:
 		srcType = "vu64"
 		dstType = "vu32"
+		_type = "uint32_t"
 	case ops.I64ExtendSI32:
 		srcType = "vi32"
 		dstType = "vi64"
+		_type = "int64_t"
 	case ops.I64ExtendUI32:
 		srcType = "vu32"
 		dstType = "vu64"
+		_type = "uint64_t"
 	default:
 		panic(fmt.Sprintf("[genConvertOp] invalid op: 0x%x", op))
 	}
 
-	x := g.popStack()
-	buf := fmt.Sprintf("%s%d.%s = (%s)(%s%d.%s);", VARIABLE_PREFIX, x, dstType,
-		dstType,
-		VARIABLE_PREFIX, x, srcType)
+	buf := fmt.Sprintf("%s%d.%s = (%s)(%s%d.%s);", VARIABLE_PREFIX, g.topStack(), dstType,
+		_type,
+		VARIABLE_PREFIX, g.topStack(), srcType)
 	g.writeln(buf)
-	g.pushStack(x)
 
 	log.Printf("[genConvertOp] op:0x%x, %s", op, buf)
 }
@@ -1143,7 +1264,7 @@ func genLoadOp(g *CGenContext, op byte) {
 
 	v := g.popStack()
 	offset := g.popStack()
-	buf := fmt.Sprintf("%s%d.%s = (%s)(*((%s *)(vm->mem + %du + %s%d.vu32)));", VARIABLE_PREFIX, v, vtype, _type,
+	buf := fmt.Sprintf("%s%d.%s = (%s)(*((%s *)(vm->mem + %dU + %s%d.vu32)));", VARIABLE_PREFIX, v, vtype, _type,
 		dataType,
 		g.fetchUint32(),
 		VARIABLE_PREFIX, offset)
@@ -1185,7 +1306,7 @@ func genStoreOp(g *CGenContext, op byte) {
 
 	v := g.popStack()
 	offset := g.popStack()
-	buf := fmt.Sprintf("(*((%s *)(vm->mem + %du + %s%d.vu32))) = %s%d.%s;", dataType,
+	buf := fmt.Sprintf("(*((%s *)(vm->mem + %dU + %s%d.vu32))) = %s%d.%s;", dataType,
 		g.fetchUint32(),
 		VARIABLE_PREFIX, offset,
 		VARIABLE_PREFIX, v, vtype)
@@ -1199,7 +1320,7 @@ func genMemoryOp(g *CGenContext, op byte) {
 
 	switch op {
 	case ops.CurrentMemory:
-		_ = g.fetchUint32()
+		_ = g.fetchInt8()
 		g.pushStack(g.varn)
 		buf = fmt.Sprintf("%s%d.vi32 = vm->pages;", VARIABLE_PREFIX, g.topStack())
 	case ops.GrowMemory:
@@ -1220,13 +1341,12 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 	buf := bytes.NewBuffer(nil)
 
 	name := g.names[index]
+	log.Printf("[genCallGoFunc]: name:%s, index:%d", name, index)
 	switch name {
 	case "exit":
-		g.genGasChecker(op, GasQuickStep)
-		buf.WriteString(fmt.Sprintf("GoExit(vm, %s%d.vi32);", VARIABLE_PREFIX, g.popStack()))
+		buf.WriteString(fmt.Sprintf("TCExit(vm, %s%d.vi32", VARIABLE_PREFIX, g.popStack()))
 	case "abort":
-		g.genGasChecker(op, GasQuickStep)
-		buf.WriteString("panic(vm, \"Abort\");")
+		buf.WriteString("TCAbort(vm);")
 	case "memcpy":
 		size := g.popStack()
 		src := g.popStack()
@@ -1293,20 +1413,17 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
 	case "TC_Require":
 		cond := g.popStack()
-		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+		buf.WriteString(fmt.Sprintf("TCRequire(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
 	case "TC_RequireWithMsg":
 		msg := g.popStack()
 		cond := g.popStack()
-		buf.WriteString(fmt.Sprintf("TCAssertWithMsg(vm, %s%d.vi32, %s%d.vu32);",
+		buf.WriteString(fmt.Sprintf("TCRequireWithMsg(vm, %s%d.vi32, %s%d.vu32);",
 			VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
 	case "TC_Revert":
-		cond := g.popStack()
-		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+		buf.WriteString("TCRevert(vm);")
 	case "TC_RevertWithMsg":
 		msg := g.popStack()
-		cond := g.popStack()
-		buf.WriteString(fmt.Sprintf("TCAssertWithMsg(vm, %s%d.vi32, %s%d.vu32);",
-			VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
+		buf.WriteString(fmt.Sprintf("TCRevertWithMsg(vm, %s%d.vu32);", VARIABLE_PREFIX, msg))
 	default:
 		args := make([]int, len(fsig.ParamTypes))
 		for argIndex := range fsig.ParamTypes {
@@ -1319,17 +1436,7 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 				if argIndex > 0 {
 					buf.WriteString(", ")
 				}
-
-				vtype := ""
-				switch argType {
-				case wasm.ValueTypeI32:
-					vtype = "vu32"
-				case wasm.ValueTypeI64:
-					vtype = "vu64"
-				default:
-					panic("invalid params type")
-				}
-				buf.WriteString(fmt.Sprintf("%s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
+				buf.WriteString(fmt.Sprintf("%s%d.%s", VARIABLE_PREFIX, args[argIndex], valueTypeToUnionType(argType)))
 			}
 			buf.WriteString("};")
 			g.writeln(buf.String())
@@ -1338,12 +1445,7 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 
 		if len(fsig.ReturnTypes) > 0 {
 			g.pushStack(g.varn)
-			switch fsig.ReturnTypes[0] {
-			case wasm.ValueTypeI32:
-				buf.WriteString(fmt.Sprintf("%s%d.vu32 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
-			case wasm.ValueTypeI64:
-				buf.WriteString(fmt.Sprintf("%s%d.vu64 = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), index))
-			}
+			buf.WriteString(fmt.Sprintf("%s%d.%s = GoFunc(vm, env_func_names[%d]", VARIABLE_PREFIX, g.topStack(), valueTypeToUnionType(fsig.ReturnTypes[0]), index))
 		} else {
 			buf.WriteString(fmt.Sprintf("GoFunc(vm, env_func_names[%d]", index))
 		}
@@ -1366,16 +1468,18 @@ func genCallOp(g *CGenContext, op byte) error {
 	index := g.fetchUint32()
 
 	module := g.vm.module
-	tIndex := module.Function.Types[index]
-	fsig := module.Types.Entries[tIndex]
+	// tIndex := module.Function.Types[index]
+	// fsig := module.Types.Entries[tIndex]
+	fsig := module.FunctionIndexSpace[index].Sig
 
+	log.Printf("[genCallOp]: params:%d, stack_len:%d, func_index:%d, func_sig:%s",
+		len(fsig.ParamTypes), g.lenStack(), index, fsig.String())
 	if g.lenStack() < len(fsig.ParamTypes) {
-		log.Printf("no enough var at stack: params:%d, stack_len:%d", len(fsig.ParamTypes), g.lenStack())
 		return fmt.Errorf("[genCallOp] no enough variable at stack")
 	}
 
 	if _, ok := g.vm.funcs[index].(goFunction); ok {
-		return genCallGoFunc(g, op, index, &fsig)
+		return genCallGoFunc(g, op, index, fsig)
 	}
 
 	args := make([]int, len(fsig.ParamTypes))
@@ -1386,27 +1490,13 @@ func genCallOp(g *CGenContext, op byte) error {
 	buf := bytes.NewBuffer(nil)
 	if len(fsig.ReturnTypes) > 0 {
 		g.pushStack(g.varn)
-		switch fsig.ReturnTypes[0] {
-		case wasm.ValueTypeI32:
-			buf.WriteString(fmt.Sprintf("%s%d.vu32 = %s%d(vm", VARIABLE_PREFIX, g.topStack(), FUNCTION_PREFIX, index))
-		case wasm.ValueTypeI64:
-			buf.WriteString(fmt.Sprintf("%s%d.vu64 = %s%d(vm", VARIABLE_PREFIX, g.topStack(), FUNCTION_PREFIX, index))
-		}
+		buf.WriteString(fmt.Sprintf("%s%d.%s = %s%d(vm", VARIABLE_PREFIX, g.topStack(), valueTypeToUnionType(fsig.ReturnTypes[0]), FUNCTION_PREFIX, index))
 	} else {
 		buf.WriteString(fmt.Sprintf("%s%d(vm", FUNCTION_PREFIX, index))
 	}
 
 	for argIndex, argType := range fsig.ParamTypes {
-		vtype := ""
-		switch argType {
-		case wasm.ValueTypeI32:
-			vtype = "vu32"
-		case wasm.ValueTypeI64:
-			vtype = "vu64"
-		default:
-			panic("invalid params type")
-		}
-		buf.WriteString(fmt.Sprintf(", %s%d.%s", VARIABLE_PREFIX, args[argIndex], vtype))
+		buf.WriteString(fmt.Sprintf(", %s%d.%s", VARIABLE_PREFIX, args[argIndex], valueTypeToUnionType(argType)))
 	}
 	buf.WriteString(");")
 
@@ -1599,6 +1689,174 @@ func genJmpOp(g *CGenContext, op byte) {
 	log.Printf("[genJumpOp] op:0x%x, %s", op, buf.String())
 }
 
+func genCallIndirectOp(g *CGenContext, op byte) error {
+	index := g.fetchUint32()
+	fsig := g.vm.module.Types.Entries[index]
+	_ = g.fetchUint32()
+
+	tableIndex := g.popStack()
+
+	log.Printf("[genCallIndirectOp]: params:%d, stack_len:%d, func_sig:%s",
+		len(fsig.ParamTypes), g.lenStack(), fsig.String())
+	if g.lenStack() < len(fsig.ParamTypes) {
+		return fmt.Errorf("[genCallIndirectOp] no enough variable at stack")
+	}
+
+	args := make([]int, len(fsig.ParamTypes))
+	for argIndex := range fsig.ParamTypes {
+		args[len(fsig.ParamTypes)-argIndex-1] = g.popStack()
+	}
+
+	g.writeln(fmt.Sprintf("vm->_findex = table_index_space[%s%d.vu32];", VARIABLE_PREFIX, tableIndex))
+	g.writeln("if (unlikely(vm->_findex >= total_funcs_cnt)) { panic(vm, \"ElemIndexOverflow\"); }")
+
+	if len(fsig.ReturnTypes) > 0 {
+		g.pushStack(g.varn)
+	}
+
+	buf := bytes.NewBuffer(nil)
+	g.writeln("{")
+	g.tabs++
+
+	g.writeln("vm->_ff = funcs_addr_table[vm->_findex];")
+
+	buf.WriteString(fmt.Sprintf("%s = (%s)(vm->_ff);", fsigToCType(&fsig, "pff"), fsigToCType(&fsig, "")))
+	g.writeln(buf.String())
+	log.Printf("[genCallIndirectOp]: %s", buf.String())
+	buf.Reset()
+
+	// if
+	buf.WriteString(fmt.Sprintf("if (vm->_ff == NULL) { "))
+	if len(args) > 0 {
+		buf.WriteString(fmt.Sprintf("uint64_t args%d[%d] = {", g.calln, len(args)))
+		for argIndex, argType := range fsig.ParamTypes {
+			if argIndex > 0 {
+				buf.WriteString(", ")
+			}
+			buf.WriteString(fmt.Sprintf("%s%d.%s", VARIABLE_PREFIX, args[argIndex], valueTypeToUnionType(argType)))
+		}
+		buf.WriteString("}; ")
+	}
+
+	if len(fsig.ReturnTypes) > 0 {
+		buf.WriteString(fmt.Sprintf("%s%d.%s = GoFunc(vm, env_func_names[vm->_findex]", VARIABLE_PREFIX, g.topStack(), valueTypeToUnionType(fsig.ReturnTypes[0])))
+	} else {
+		buf.WriteString(fmt.Sprintf("GoFunc(vm, env_func_names[vm->_findex]"))
+	}
+
+	if len(args) > 0 {
+		buf.WriteString(fmt.Sprintf(", %d, &args%d[0]); ", len(args), g.calln))
+		g.calln++
+	} else {
+		buf.WriteString(fmt.Sprintf(", %d, NULL); ", len(args)))
+	}
+
+	// else
+	buf.WriteString("} else { ")
+	if len(fsig.ReturnTypes) > 0 {
+		buf.WriteString(fmt.Sprintf("%s%d.%s = ", VARIABLE_PREFIX, g.topStack(), valueTypeToUnionType(fsig.ReturnTypes[0])))
+	}
+	buf.WriteString("pff(vm")
+	for argIndex, argType := range fsig.ParamTypes {
+		buf.WriteString(fmt.Sprintf(", %s%d.%s", VARIABLE_PREFIX, args[argIndex], valueTypeToUnionType(argType)))
+	}
+	buf.WriteString("); }")
+
+	g.writeln(buf.String())
+	log.Printf("[genCallIndirectOp]: %s", buf.String())
+	buf.Reset()
+
+	g.tabs--
+	g.writeln("}")
+
+	return nil
+}
+
+func genFloatOp(g *CGenContext, op byte) {
+	switch op {
+	case ops.F64Load, ops.F32Load:
+		_ = g.fetchUint32()
+		// g.popStack()
+		// g.pushStack(g.varn)
+	case ops.F64Store, ops.F32Store:
+		_ = g.popStack()
+		_ = g.fetchUint32()
+		g.popStack()
+	case ops.F64Const:
+		_ = g.fetchFloat64()
+		g.pushStack(g.varn)
+	case ops.F32Const:
+		_ = g.fetchFloat32()
+		g.pushStack(g.varn)
+	case ops.F64Add, ops.F64Sub, ops.F64Mul, ops.F64Div, ops.F64Eq, ops.F64Ne, ops.F64Le, ops.F64Lt, ops.F64Ge, ops.F64Gt, ops.F64Min, ops.F64Max, ops.F64Copysign,
+		ops.F32Add, ops.F32Sub, ops.F32Mul, ops.F32Div, ops.F32Eq, ops.F32Ge, ops.F32Ne, ops.F32Gt, ops.F32Lt, ops.F32Le, ops.F32Min, ops.F32Max, ops.F32Copysign:
+		_ = g.popStack()
+		_ = g.popStack()
+		g.pushStack(g.varn)
+	case ops.F32Abs, ops.F32Neg, ops.F32Ceil, ops.F32Floor, ops.F32Trunc, ops.F32Nearest, ops.F32Sqrt,
+		ops.F64Abs, ops.F64Neg, ops.F64Ceil, ops.F64Floor, ops.F64Trunc, ops.F64Nearest, ops.F64Sqrt,
+		ops.I32TruncSF32, ops.I32TruncSF64, ops.I32TruncUF32, ops.I32TruncUF64,
+		ops.I64TruncSF32, ops.I64TruncUF32, ops.I64TruncSF64, ops.I64TruncUF64,
+		ops.I32ReinterpretF32, ops.I64ReinterpretF64, ops.F32ReinterpretI32, ops.F64ReinterpretI64,
+		ops.F32ConvertSI32, ops.F32ConvertUI32, ops.F32ConvertSI64, ops.F32ConvertUI64, ops.F32DemoteF64,
+		ops.F64ConvertSI32, ops.F64ConvertSI64, ops.F64ConvertUI32, ops.F64ConvertUI64, ops.F64PromoteF32:
+
+	default:
+		panic(fmt.Sprintf("[genJumpOp] invalid op: 0x%x", op))
+	}
+}
+
 func init() {
 	log = wasm.NoopLogger{}
+}
+
+// -----------------------------------------------------
+
+func valueTypeToCType(t wasm.ValueType) string {
+	switch t {
+	case wasm.ValueTypeI32:
+		return "uint32_t"
+	case wasm.ValueTypeI64:
+		return "uint64_t"
+	case wasm.ValueTypeF32:
+		return "float"
+	case wasm.ValueTypeF64:
+		return "double"
+	default:
+		return "void"
+	}
+}
+
+func valueTypeToUnionType(t wasm.ValueType) string {
+	switch t {
+	case wasm.ValueTypeI32:
+		return "vu32"
+	case wasm.ValueTypeI64:
+		return "vu64"
+	case wasm.ValueTypeF32:
+		return "vf32"
+	case wasm.ValueTypeF64:
+		return "vf64"
+	default:
+		return "void"
+	}
+}
+
+func fsigReturnCType(fsig *wasm.FunctionSig) string {
+	if len(fsig.ReturnTypes) > 0 {
+		return valueTypeToCType(fsig.ReturnTypes[0])
+	}
+	return "void"
+}
+
+func fsigToCType(fsig *wasm.FunctionSig, name string) string {
+	buf := bytes.NewBuffer(nil)
+
+	buf.WriteString(fmt.Sprintf("%s (*%s)(vm_t*", fsigReturnCType(fsig), name))
+	for _, arg := range fsig.ParamTypes {
+		buf.WriteString(fmt.Sprintf(", %s", valueTypeToCType(arg)))
+	}
+	buf.WriteString(")")
+
+	return buf.String()
 }

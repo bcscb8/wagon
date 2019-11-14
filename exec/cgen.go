@@ -226,12 +226,15 @@ func (g *CGenContext) op() byte {
 func (g *CGenContext) genGasChecker(op byte, cost uint64) {
 	if g.enableComment {
 		g.writeln(fmt.Sprintf("// %d:%d, %s", g.pc, g.opCount, ops.OpSignature(op)))
+
+		// @Todo: for debug
+		g.writeln(fmt.Sprintf("printf(\"pc:%d:0x%x, op:%s, gas:%d\\n\");", g.pc, op, ops.OpSignature(op), cost))
 	}
+
 	if !g.disableGas {
 		// g.writeln(fmt.Sprintf("vm->gas_used += %d; if (unlikely(vm->gas_used > vm->gas)) { vm->gas_used -= %d; panic(vm, \"OutOfGas\"); }", cost, cost))
 		g.writeln(fmt.Sprintf("if (likely(vm->gas >= %d)) {vm->gas -= %d; vm->gas_used += %d;} else {panic(vm, \"OutOfGas\");}", cost, cost, cost))
 		// g.writeln(fmt.Sprintf("if (likely(vm->gas >= vm->gas_used) && likely((vm->gas - vm->gas_used) >= %d)) { vm->gas_used += %d; } else { panic(vm, \"OutOfGas\"); }", cost, cost))
-		// g.writeln(fmt.Sprintf("printf(\"op:%s, gas:%d\\n\");", ops.OpSignature(op), cost))
 	}
 }
 
@@ -447,7 +450,7 @@ static inline int64_t TCAtoi64(vm_t *vm, uint32_t s) {
 static inline void TCRequire(vm_t *vm, int32_t cond) {
 	USE_SIM_GAS_N(vm, 2)
 	if (cond == 0) {
-		GoRevert(vm, "");
+		GoRevert(vm, "TCRequire");
 	}
 }
 
@@ -464,13 +467,13 @@ static inline void TCRequireWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
 static inline void TCAssert(vm_t *vm, int32_t cond) {
 	USE_SIM_GAS_N(vm, 2)
 	if (cond == 0) {
-		GoRevert(vm, "");
+		GoRevert(vm, "TCAssert");
 	}
 }
 
 static inline void TCRevert(vm_t *vm) {
 	USE_SIM_GAS_N(vm, 2)
-	GoRevert(vm, "");
+	GoRevert(vm, "TCRevert");
 }
 
 static inline void TCRevertWithMsg(vm_t *vm, uint32_t msg) {
@@ -511,7 +514,7 @@ func (g *CGenContext) Compile(code []byte, path, name string) (string, error) {
 		}()
 	}
 
-	cmd := exec.Command("gcc", "-fPIC", "-Ofast", "-shared", "-o", out, in)
+	cmd := exec.Command("gcc", "-fPIC", "-O2", "-shared", "-o", out, in)
 	cmdOut, err := cmd.CombinedOutput()
 	log.Printf("compiler output: %s", string(cmdOut))
 	return out, err
@@ -744,6 +747,13 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 		g.writeln("uint8_t _dummy = 0;\n")
 	}
 
+	// @Todo: for debug
+	if g.enableComment {
+		if g.id == uint64(g.mainIndex) {
+			g.sprintf("printf(\"thunderchain_main begin\\n\");\n")
+		}
+	}
+
 	// generate code body
 	var op byte
 	for !g.isEnd() {
@@ -823,6 +833,13 @@ func (g *CGenContext) doGenerateF() (_ []byte, err error) {
 
 		if err != nil {
 			return g.cbytes(), err
+		}
+	}
+
+	// @Todo: for debug
+	if g.enableComment {
+		if g.id == uint64(g.mainIndex) {
+			g.sprintf("printf(\"thunderchain_main end\\n\");\n")
 		}
 	}
 
@@ -1342,6 +1359,12 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 
 	name := g.names[index]
 	log.Printf("[genCallGoFunc]: name:%s, index:%d", name, index)
+
+	// @Todo: for debug
+	if g.enableComment {
+		g.sprintf(fmt.Sprintf("printf(\"call name=%s, index=%d, pc=%d\\n\");\n", name, index, g.pc))
+	}
+
 	switch name {
 	case "exit":
 		buf.WriteString(fmt.Sprintf("TCExit(vm, %s%d.vi32", VARIABLE_PREFIX, g.popStack()))
@@ -1480,6 +1503,11 @@ func genCallOp(g *CGenContext, op byte) error {
 
 	if _, ok := g.vm.funcs[index].(goFunction); ok {
 		return genCallGoFunc(g, op, index, fsig)
+	}
+
+	// @Todo: for debug
+	if g.enableComment {
+		g.sprintf(fmt.Sprintf("printf(\"call %s%d, pc=%d\\n\");\n", FUNCTION_PREFIX, index, g.pc))
 	}
 
 	args := make([]int, len(fsig.ParamTypes))

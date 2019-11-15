@@ -279,6 +279,7 @@ var (
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 typedef struct {
 	void *ctx;
@@ -1367,7 +1368,7 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 
 	switch name {
 	case "exit":
-		buf.WriteString(fmt.Sprintf("TCExit(vm, %s%d.vi32", VARIABLE_PREFIX, g.popStack()))
+		buf.WriteString(fmt.Sprintf("TCExit(vm, %s%d.vi32);", VARIABLE_PREFIX, g.popStack()))
 	case "abort":
 		buf.WriteString("TCAbort(vm);")
 	case "memcpy":

@@ -418,7 +418,7 @@ static inline int TCStrcmp(vm_t *vm, uint32_t s1, uint32_t s2) {
 #ifdef ENABLE_GAS
 	uint32_t n1 = strlen((const char *)(vm->mem+s1));
 	uint32_t n2 = strlen((const char *)(vm->mem+s2));
-	uint32_t n = (n1 > n2) ? n1 : n2;
+	uint32_t n = (n1 > n2) ? n2 : n1;
 	USE_MEM_GAS_N(vm, n, 1)
 #endif
 	return strcmp((const char *)(vm->mem+s1), (const char *)(vm->mem+s2));

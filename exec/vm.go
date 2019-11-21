@@ -580,6 +580,10 @@ func (vm *VM) Run() (rtrn interface{}, err error) {
 	return rtrn, err
 }
 
+var (
+	EnableVMDebug = false
+)
+
 func (vm *VM) execCode(compiled compiledFunction) uint64 {
 	feeOps, ok := vm.ops.(FeeBackend)
 	if !ok {
@@ -594,14 +598,23 @@ outer:
 		preFee := feeOps.GetFee()
 		switch op {
 		case ops.Return:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), 0)
+			}
 			break outer
 		case compile.OpJmp:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
 			vm.ctx.pc = vm.fetchInt64()
 			continue
 		case compile.OpJmpZ:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
@@ -611,6 +624,9 @@ outer:
 				continue
 			}
 		case compile.OpJmpNz:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
@@ -630,6 +646,9 @@ outer:
 				continue
 			}
 		case ops.BrTable:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
@@ -661,12 +680,18 @@ outer:
 			}
 			continue
 		case compile.OpDiscard:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
 			place := vm.fetchInt64()
 			vm.ctx.stack = vm.ctx.stack[:len(vm.ctx.stack)-int(place)]
 		case compile.OpDiscardPreserveTop:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
@@ -676,6 +701,9 @@ outer:
 			vm.pushUint64(top)
 
 		case ops.WagonNativeExec:
+			if EnableVMDebug {
+				fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), GasQuickStep)
+			}
 			if !vm.ops.UseGas(GasQuickStep) {
 				panic("[vm] execCode: OutOfGas")
 			}
@@ -698,6 +726,11 @@ outer:
 				realCost := cost - currentFee
 				feeOps.CalFee(realCost, currentFee)
 				panic("[vm] execCode: OutOfGas")
+			}
+			if EnableVMDebug {
+				if op != ops.Call {
+					fmt.Printf("pc:%d:0x%x op:%s, gas:%d\n", vm.ctx.pc, op, ops.OpSignature(op), cost)
+				}
 			}
 			if vm.ops.IsTracing() {
 				vm.ops.Trace(fmt.Sprintf("debug op:%d, name:%s, gas:%d\n", op, ops.OpSignature(op), cost))

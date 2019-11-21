@@ -915,10 +915,10 @@ func genConstOp(g *CGenContext, op byte) {
 	switch op {
 	case ops.I32Const:
 		val := g.fetchUint32()
-		buf = fmt.Sprintf("%s%d.vu32 = %dU;", VARIABLE_PREFIX, g.topStack(), val)
+		buf = fmt.Sprintf("%s%d.vu32 = (uint32_t)(0x%x);", VARIABLE_PREFIX, g.topStack(), val)
 	case ops.I64Const:
 		val := g.fetchUint64()
-		buf = fmt.Sprintf("%s%d.vu64 = %dULL;", VARIABLE_PREFIX, g.topStack(), val)
+		buf = fmt.Sprintf("%s%d.vu64 = (uint64_t)(0x%x);", VARIABLE_PREFIX, g.topStack(), val)
 	}
 
 	g.writeln(buf)
@@ -1282,7 +1282,7 @@ func genLoadOp(g *CGenContext, op byte) {
 
 	v := g.popStack()
 	offset := g.popStack()
-	buf := fmt.Sprintf("%s%d.%s = (%s)(*((%s *)(vm->mem + %dU + %s%d.vu32)));", VARIABLE_PREFIX, v, vtype, _type,
+	buf := fmt.Sprintf("%s%d.%s = (%s)(*((%s *)(vm->mem + 0x%x + %s%d.vu32)));", VARIABLE_PREFIX, v, vtype, _type,
 		dataType,
 		g.fetchUint32(),
 		VARIABLE_PREFIX, offset)

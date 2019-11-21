@@ -53,7 +53,12 @@ func (gfn goFunction) gas(vm *VM, index int64) (uint64, error) {
 	}
 	vm.ops.Trace("host function gas", "index", index, "args", args)
 	hostFn := vm.module.FunctionIndexSpace[index].Host
-	return hostFn.Gas(index, vm.ops, args)
+	ret, err := hostFn.Gas(index, vm.ops, args)
+
+	if EnableVMDebug {
+		fmt.Printf("call index:%d, gas:%d, pc:%d\n", index, ret, vm.ctx.pc)
+	}
+	return ret, err
 }
 
 func (gfn goFunction) call(vm *VM, index int64) {
@@ -141,6 +146,9 @@ func (fn goFunction) call(vm *VM, index int64) {
 */
 
 func (compiled compiledFunction) gas(vm *VM, index int64) (uint64, error) {
+	if EnableVMDebug {
+		fmt.Printf("call index:%d, gas:%d, pc:%d\n", index, 0, vm.ctx.pc)
+	}
 	return 0, nil
 }
 

@@ -350,6 +350,67 @@ static inline uint32_t popcnt64(uint64_t x) {
 	return (uint32_t)(__builtin_popcountll(x));
 }
 
+// ----------------
+
+static inline uint8_t loadU8(uint8_t *p) {
+	return p[0]; 
+}
+static inline uint16_t loadU16(uint8_t *p) {
+	return ( ((uint16_t)p[0]) | (((uint16_t)p[1])<<8) );
+}
+static inline uint32_t loadU32(uint8_t *p) {
+	return ( ((uint32_t)p[0]) | (((uint32_t)p[1])<<8) | (((uint32_t)p[2])<<16) | (((uint32_t)p[3])<<24) );
+}
+static inline uint64_t loadU64(uint8_t *p) {
+	return ( ((uint64_t)p[0]) | (((uint64_t)p[1])<<8) | (((uint64_t)p[2])<<16) | (((uint64_t)p[3])<<24) | \
+		(((uint64_t)p[4])<<32) | (((uint64_t)p[5])<<40) | (((uint64_t)p[6])<<48) | (((uint64_t)p[7])<<56) );
+}
+static inline void storeU8(uint8_t *p, uint8_t v) {
+	p[0] = v;
+}
+static inline void storeU16(uint8_t *p, uint16_t v) {
+	p[0] = ( ((uint8_t)v) & 0xff );
+	p[1] = ( (uint8_t)((v>>8) & 0xff) );
+}
+static inline void storeU32(uint8_t *p, uint32_t v) {
+	p[0] = ( ((uint8_t)v) & 0xff );
+	p[1] = ( (uint8_t)((v>>8) & 0xff) );
+	p[2] = ( (uint8_t)((v>>16) & 0xff) );
+	p[3] = ( (uint8_t)((v>>24) & 0xff) );
+}
+static inline void storeU64(uint8_t *p, uint64_t v) {
+	p[0] = ( ((uint8_t)v) & 0xff );
+	p[1] = ( (uint8_t)((v>>8) & 0xff) );
+	p[2] = ( (uint8_t)((v>>16) & 0xff) );
+	p[3] = ( (uint8_t)((v>>24) & 0xff) );
+	p[4] = ( (uint8_t)((v>>32) & 0xff) );
+	p[5] = ( (uint8_t)((v>>40) & 0xff) );
+	p[6] = ( (uint8_t)((v>>48) & 0xff) );
+	p[7] = ( (uint8_t)((v>>56) & 0xff) );
+}
+
+#define I64Load(_p) (uint64_t)(loadU64((_p)))
+
+#define I64Load8s(_p) (int64_t)((int8_t)(loadU8((_p))))
+#define I64Load16s(_p) (int64_t)((int16_t)(loadU16((_p))))
+#define I64Load32s(_p) (int64_t)((int32_t)(loadU32((_p))))
+// #define I64Load64s(_p) ((int64_t)(loadU64((_p))))
+
+#define I64Load8u(_p) (uint64_t)((uint8_t)(loadU8((_p))))
+#define I64Load16u(_p) (uint64_t)((uint16_t)(loadU16((_p))))
+#define I64Load32u(_p) (uint64_t)((uint32_t)(loadU32((_p))))
+// #define I64Load64u(_p) ((uint64_t)(loadU64((_p))))
+
+#define I32Load(_p) (uint32_t)(loadU32((_p)))
+
+#define I32Load8s(_p) (int32_t)((int8_t)(loadU8((_p))))
+#define I32Load16s(_p) (int32_t)((int16_t)(loadU16((_p))))
+// #define I32Load32s(_p) ((int32_t)(loadU32((_p))))
+
+#define I32Load8u(_p) (uint32_t)((uint8_t)(loadU8((_p))))
+#define I32Load16u(_p) (uint32_t)((uint16_t)(loadU16((_p))))
+// #define I32Load32u(_p) ((uint32_t)(loadU32((_p))))
+
 `
 	cenv = `
 // -----------------------------------------------------
@@ -1222,58 +1283,45 @@ func genConvertOp(g *CGenContext, op byte) {
 
 func genLoadOp(g *CGenContext, op byte) {
 	vtype := ""
-	dataType := ""
-	_type := ""
+	f := ""
 
 	switch op {
 	case ops.I64Load:
 		vtype = "vu64"
-		_type = "uint64_t"
-		dataType = "uint64_t"
+		f = "I64Load"
 	case ops.I64Load32s:
 		vtype = "vi64"
-		_type = "int64_t"
-		dataType = "int32_t"
+		f = "I64Load32s"
 	case ops.I64Load32u:
 		vtype = "vu64"
-		_type = "uint64_t"
-		dataType = "uint32_t"
+		f = "I64Load32u"
 	case ops.I64Load16s:
 		vtype = "vi64"
-		_type = "int64_t"
-		dataType = "int16_t"
+		f = "I64Load16s"
 	case ops.I64Load16u:
 		vtype = "vu64"
-		_type = "uint64_t"
-		dataType = "uint16_t"
+		f = "I64Load16u"
 	case ops.I64Load8s:
 		vtype = "vi64"
-		_type = "int64_t"
-		dataType = "int8_t"
+		f = "I64Load8s"
 	case ops.I64Load8u:
-		vtype = "vi64"
-		_type = "uint64_t"
-		dataType = "int8_t"
+		vtype = "vu64"
+		f = "I64Load8u"
 	case ops.I32Load:
 		vtype = "vu32"
-		_type = "uint32_t"
-		dataType = "uint32_t"
+		f = "I32Load"
 	case ops.I32Load16s:
 		vtype = "vi32"
-		_type = "int32_t"
-		dataType = "int16_t"
+		f = "I32Load16s"
 	case ops.I32Load16u:
 		vtype = "vu32"
-		_type = "uint32_t"
-		dataType = "uint16_t"
+		f = "I32Load16u"
 	case ops.I32Load8s:
 		vtype = "vi32"
-		_type = "int32_t"
-		dataType = "int8_t"
+		f = "I32Load8s"
 	case ops.I32Load8u:
 		vtype = "vu32"
-		_type = "uint32_t"
-		dataType = "uint8_t"
+		f = "I32Load8u"
 	default:
 		panic(fmt.Sprintf("[genLoadOp] invalid op: 0x%x", op))
 	}
@@ -1282,10 +1330,8 @@ func genLoadOp(g *CGenContext, op byte) {
 
 	v := g.popStack()
 	offset := g.popStack()
-	buf := fmt.Sprintf("%s%d.%s = (%s)(*((%s *)(vm->mem + 0x%x + %s%d.vu32)));", VARIABLE_PREFIX, v, vtype, _type,
-		dataType,
-		g.fetchUint32(),
-		VARIABLE_PREFIX, offset)
+	buf := fmt.Sprintf("%s%d.%s = %s(vm->mem + 0x%x + %s%d.vu32);", VARIABLE_PREFIX, v, vtype,
+		f, g.fetchUint32(), VARIABLE_PREFIX, offset)
 	g.writeln(buf)
 	g.pushStack(v)
 
@@ -1294,40 +1340,37 @@ func genLoadOp(g *CGenContext, op byte) {
 
 func genStoreOp(g *CGenContext, op byte) {
 	vtype := ""
-	dataType := ""
+	f := ""
 
 	switch op {
 	case ops.I64Store:
 		vtype = "vu64"
-		dataType = "uint64_t"
+		f = "storeU64"
 	case ops.I64Store32:
 		vtype = "vu32"
-		dataType = "uint32_t"
+		f = "storeU32"
 	case ops.I64Store16:
 		vtype = "vu16"
-		dataType = "uint16_t"
+		f = "storeU16"
 	case ops.I64Store8:
 		vtype = "vu8"
-		dataType = "uint8_t"
+		f = "storeU8"
 	case ops.I32Store:
 		vtype = "vu32"
-		dataType = "uint32_t"
+		f = "storeU32"
 	case ops.I32Store16:
 		vtype = "vu16"
-		dataType = "uint16_t"
+		f = "storeU16"
 	case ops.I32Store8:
 		vtype = "vu8"
-		dataType = "uint8_t"
+		f = "storeU8"
 	default:
 		panic(fmt.Sprintf("[genStoreOp] invalid op: 0x%x", op))
 	}
 
 	v := g.popStack()
 	offset := g.popStack()
-	buf := fmt.Sprintf("(*((%s *)(vm->mem + %dU + %s%d.vu32))) = %s%d.%s;", dataType,
-		g.fetchUint32(),
-		VARIABLE_PREFIX, offset,
-		VARIABLE_PREFIX, v, vtype)
+	buf := fmt.Sprintf("%s(vm->mem + 0x%x + %s%d.vu32, %s%d.%s);", f, g.fetchUint32(), VARIABLE_PREFIX, offset, VARIABLE_PREFIX, v, vtype)
 	g.writeln(buf)
 
 	log.Printf("[genStoreOp] op:0x%x, %s", op, buf)

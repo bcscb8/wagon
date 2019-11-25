@@ -207,7 +207,8 @@ func (g *CGenContext) op() byte {
 			if gasCost == nil {
 				// panic(fmt.Sprintf("gasCost nil: op:0x%x %s", ins, ops.OpSignature(ins)))
 				log.Printf("gasCost nil: op:0x%x %s", ins, ops.OpSignature(ins))
-				g.sprintf("panic(vm, \"InvalidIns: 0x%x  %s\");\n", ins, ops.OpSignature(ins))
+				// g.sprintf("panic(vm, \"InvalidIns: 0x%x  %s\");\n", ins, ops.OpSignature(ins))
+				g.sprintf("panic(vm, \"[vm] operation(%s) Forbiden!!\");\n", ops.OpSignature(ins))
 			} else {
 				cost, err = gasCost(g.vm)
 				if err != nil {

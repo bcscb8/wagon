@@ -453,104 +453,104 @@ static inline uint32_t to_word_size(uint32_t n) {
 #define USE_SIM_GAS_N(vm, n) 
 #endif
 
-// static inline uint32_t TCMemcpy(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
-// 	USE_MEM_GAS_N(vm, n, 3)
-// 	memcpy(vm->mem+dst, vm->mem+src, n);
-// 	return dst;
-// }
+static inline uint32_t TCMemcpy(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memcpy(vm->mem+dst, vm->mem+src, n);
+	return dst;
+}
 
-// static inline uint32_t TCMemset(vm_t *vm, uint32_t src, int c, uint32_t n) {
-// 	USE_MEM_GAS_N(vm, n, 3)
-// 	memset(vm->mem+src, c, n);
-// 	return src;
-// }
+static inline uint32_t TCMemset(vm_t *vm, uint32_t src, int c, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memset(vm->mem+src, c, n);
+	return src;
+}
 
-// static inline uint32_t TCMemmove(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
-// 	USE_MEM_GAS_N(vm, n, 3)
-// 	memmove(vm->mem+dst, vm->mem+src, n);
-// 	return dst;
-// }
+static inline uint32_t TCMemmove(vm_t *vm, uint32_t dst, uint32_t src, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 3)
+	memmove(vm->mem+dst, vm->mem+src, n);
+	return dst;
+}
 
-// static inline int TCMemcmp(vm_t *vm, uint32_t s1, uint32_t s2, uint32_t n) {
-// 	USE_MEM_GAS_N(vm, n, 1)
-// 	return memcmp(vm->mem+s1, vm->mem+s2, n);
-// }
+static inline int TCMemcmp(vm_t *vm, uint32_t s1, uint32_t s2, uint32_t n) {
+	USE_MEM_GAS_N(vm, n, 1)
+	return memcmp(vm->mem+s1, vm->mem+s2, n);
+}
 
-// static inline int TCStrcmp(vm_t *vm, uint32_t s1, uint32_t s2) {
-// #ifdef ENABLE_GAS
-// 	uint32_t n1 = strlen((const char *)(vm->mem+s1));
-// 	uint32_t n2 = strlen((const char *)(vm->mem+s2));
-// 	uint32_t n = (n1 > n2) ? n2 : n1;
-// 	USE_MEM_GAS_N(vm, n, 1)
-// #endif
-// 	return strcmp((const char *)(vm->mem+s1), (const char *)(vm->mem+s2));
-// }
+static inline int TCStrcmp(vm_t *vm, uint32_t s1, uint32_t s2) {
+#ifdef ENABLE_GAS
+	uint32_t n1 = strlen((const char *)(vm->mem+s1));
+	uint32_t n2 = strlen((const char *)(vm->mem+s2));
+	uint32_t n = (n1 > n2) ? n2 : n1;
+	USE_MEM_GAS_N(vm, n, 1)
+#endif
+	return strcmp((const char *)(vm->mem+s1), (const char *)(vm->mem+s2));
+}
 
-// static inline uint32_t TCStrcpy(vm_t *vm, uint32_t dst, uint32_t src) {
-// #ifdef ENABLE_GAS
-// 	uint32_t n = strlen((const char *)(vm->mem+src));
-// 	USE_MEM_GAS_N(vm, n, 3)
-// #endif
-// 	strcpy((char *)(vm->mem+dst), (const char *)(vm->mem+src));
-// 	return dst;
-// }
+static inline uint32_t TCStrcpy(vm_t *vm, uint32_t dst, uint32_t src) {
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+src));
+	USE_MEM_GAS_N(vm, n, 3)
+#endif
+	strcpy((char *)(vm->mem+dst), (const char *)(vm->mem+src));
+	return dst;
+}
 
-// static inline uint32_t TCStrlen(vm_t *vm, uint32_t s) {
-// 	USE_SIM_GAS_N(vm, 2)
-// 	return strlen((const char *)(vm->mem + s));
-// }
+static inline uint32_t TCStrlen(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 2)
+	return strlen((const char *)(vm->mem + s));
+}
 
-// static inline int TCAtoi(vm_t *vm, uint32_t s) {
-// 	USE_SIM_GAS_N(vm, 20)
-// 	return atoi((const char *)(vm->mem+s));
-// }
+static inline int TCAtoi(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 20)
+	return atoi((const char *)(vm->mem+s));
+}
 
-// static inline int64_t TCAtoi64(vm_t *vm, uint32_t s) {
-// 	USE_SIM_GAS_N(vm, 20)
-// 	return atoll((const char *)(vm->mem + s));
-// }
+static inline int64_t TCAtoi64(vm_t *vm, uint32_t s) {
+	USE_SIM_GAS_N(vm, 20)
+	return atoll((const char *)(vm->mem + s));
+}
 
-// static inline void TCRequire(vm_t *vm, int32_t cond) {
-// 	USE_SIM_GAS_N(vm, 2)
-// 	if (cond == 0) {
-// 		GoRevert(vm, "TCRequire");
-// 	}
-// }
+static inline void TCRequire(vm_t *vm, int32_t cond) {
+	USE_SIM_GAS_N(vm, 2)
+	if (cond == 0) {
+		GoRevert(vm, "TCRequire");
+	}
+}
 
-// static inline void TCRequireWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
-// #ifdef ENABLE_GAS
-// 	uint32_t n = strlen((const char *)(vm->mem+msg));
-// 	USE_MEM_GAS_N(vm, n, 1)
-// #endif
-// 	if (cond == 0) {
-// 		GoRevert(vm, (const char *)(vm->mem+msg));
-// 	}
-// }
+static inline void TCRequireWithMsg(vm_t *vm, int32_t cond, uint32_t msg) {
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+msg));
+	USE_MEM_GAS_N(vm, n, 1)
+#endif
+	if (cond == 0) {
+		GoRevert(vm, (const char *)(vm->mem+msg));
+	}
+}
 
-// static inline void TCAssert(vm_t *vm, int32_t cond) {
-// 	USE_SIM_GAS_N(vm, 2)
-// 	if (cond == 0) {
-// 		GoRevert(vm, "TCAssert");
-// 	}
-// }
+static inline void TCAssert(vm_t *vm, int32_t cond) {
+	USE_SIM_GAS_N(vm, 2)
+	if (cond == 0) {
+		GoRevert(vm, "TCAssert");
+	}
+}
 
-// static inline void TCRevert(vm_t *vm) {
-// 	USE_SIM_GAS_N(vm, 2)
-// 	GoRevert(vm, "TCRevert");
-// }
+static inline void TCRevert(vm_t *vm) {
+	USE_SIM_GAS_N(vm, 2)
+	GoRevert(vm, "TCRevert");
+}
 
-// static inline void TCRevertWithMsg(vm_t *vm, uint32_t msg) {
-// #ifdef ENABLE_GAS
-// 	uint32_t n = strlen((const char *)(vm->mem+msg));
-// 	USE_MEM_GAS_N(vm, n, 1)
-// #endif
-// 	GoRevert(vm, (const char *)(vm->mem+msg));
-// }
+static inline void TCRevertWithMsg(vm_t *vm, uint32_t msg) {
+#ifdef ENABLE_GAS
+	uint32_t n = strlen((const char *)(vm->mem+msg));
+	USE_MEM_GAS_N(vm, n, 1)
+#endif
+	GoRevert(vm, (const char *)(vm->mem+msg));
+}
 
-// static inline void TCAbort(vm_t *vm) {
-// 	USE_SIM_GAS_N(vm, 2)
-// 	panic(vm, "Abort");
-// }
+static inline void TCAbort(vm_t *vm) {
+	USE_SIM_GAS_N(vm, 2)
+	panic(vm, "Abort");
+}
 
 static inline void TCExit(vm_t *vm, int32_t n) {
 	USE_SIM_GAS_N(vm, 2)
@@ -717,36 +717,36 @@ func (g *CGenContext) Generate() ([]byte, error) {
 		switch name {
 		case "exit":
 			buf.WriteString("TCExit")
-		// case "abort":
-		// 	buf.WriteString("TCAbort")
-		// case "memcpy":
-		// 	buf.WriteString("TCMemcpy")
-		// case "memset":
-		// 	buf.WriteString("TCMemset")
-		// case "memmove":
-		// 	buf.WriteString("TCMemmove")
-		// case "memcmp":
-		// 	buf.WriteString("TCMemcmp")
-		// case "strcmp":
-		// 	buf.WriteString("TCStrcmp")
-		// case "strcpy":
-		// 	buf.WriteString("TCStrcpy")
-		// case "strlen":
-		// 	buf.WriteString("TCStrlen")
-		// case "atoi":
-		// 	buf.WriteString("TCAtoi")
-		// case "atoi64":
-		// 	buf.WriteString("TCAtoi64")
-		// case "TC_Assert":
-		// 	buf.WriteString("TCAssert")
-		// case "TC_Require":
-		// 	buf.WriteString("TCRequire")
-		// case "TC_RequireWithMsg":
-		// 	buf.WriteString("TCRequireWithMsg")
-		// case "TC_Revert":
-		// 	buf.WriteString("TCRevert")
-		// case "TC_RevertWithMsg":
-		// 	buf.WriteString("TCRevertWithMsg")
+		case "abort":
+			buf.WriteString("TCAbort")
+		case "memcpy":
+			buf.WriteString("TCMemcpy")
+		case "memset":
+			buf.WriteString("TCMemset")
+		case "memmove":
+			buf.WriteString("TCMemmove")
+		case "memcmp":
+			buf.WriteString("TCMemcmp")
+		case "strcmp":
+			buf.WriteString("TCStrcmp")
+		case "strcpy":
+			buf.WriteString("TCStrcpy")
+		case "strlen":
+			buf.WriteString("TCStrlen")
+		case "atoi":
+			buf.WriteString("TCAtoi")
+		case "atoi64":
+			buf.WriteString("TCAtoi64")
+		case "TC_Assert":
+			buf.WriteString("TCAssert")
+		case "TC_Require":
+			buf.WriteString("TCRequire")
+		case "TC_RequireWithMsg":
+			buf.WriteString("TCRequireWithMsg")
+		case "TC_Revert":
+			buf.WriteString("TCRevert")
+		case "TC_RevertWithMsg":
+			buf.WriteString("TCRevertWithMsg")
 		default:
 			buf.WriteString("NULL")
 		}
@@ -1413,85 +1413,85 @@ func genCallGoFunc(g *CGenContext, op byte, index uint32, fsig *wasm.FunctionSig
 	switch name {
 	case "exit":
 		buf.WriteString(fmt.Sprintf("TCExit(vm, %s%d.vi32);", VARIABLE_PREFIX, g.popStack()))
-	// case "abort":
-	// 	buf.WriteString("TCAbort(vm);")
-	// case "memcpy":
-	// 	size := g.popStack()
-	// 	src := g.popStack()
-	// 	dst := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemcpy(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(),
-	// 		VARIABLE_PREFIX, dst,
-	// 		VARIABLE_PREFIX, src,
-	// 		VARIABLE_PREFIX, size))
-	// case "memset":
-	// 	size := g.popStack()
-	// 	c := g.popStack()
-	// 	src := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemset(vm, %s%d.vu32, %s%d.vi32, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(),
-	// 		VARIABLE_PREFIX, src,
-	// 		VARIABLE_PREFIX, c,
-	// 		VARIABLE_PREFIX, size))
-	// case "memmove":
-	// 	n := g.popStack()
-	// 	src := g.popStack()
-	// 	dst := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemmove(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
-	// 		VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
-	// case "memcmp":
-	// 	n := g.popStack()
-	// 	src := g.popStack()
-	// 	dst := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemcmp(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
-	// 		VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
-	// case "strcmp":
-	// 	s2 := g.popStack()
-	// 	s1 := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCStrcmp(vm, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
-	// 		VARIABLE_PREFIX, s1, VARIABLE_PREFIX, s2))
-	// case "strcpy":
-	// 	src := g.popStack()
-	// 	dst := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrcpy(vm, %s%d.vu32, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src))
-	// case "strlen":
-	// 	s := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrlen(vm, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
-	// case "atoi":
-	// 	s := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCAtoi(vm, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
-	// case "atoi64":
-	// 	s := g.popStack()
-	// 	g.pushStack(g.varn)
-	// 	buf.WriteString(fmt.Sprintf("%s%d.vi64 = TCAtoi64(vm, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
-	// case "TC_Assert":
-	// 	cond := g.popStack()
-	// 	buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
-	// case "TC_Require":
-	// 	cond := g.popStack()
-	// 	buf.WriteString(fmt.Sprintf("TCRequire(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
-	// case "TC_RequireWithMsg":
-	// 	msg := g.popStack()
-	// 	cond := g.popStack()
-	// 	buf.WriteString(fmt.Sprintf("TCRequireWithMsg(vm, %s%d.vi32, %s%d.vu32);",
-	// 		VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
-	// case "TC_Revert":
-	// 	buf.WriteString("TCRevert(vm);")
-	// case "TC_RevertWithMsg":
-	// 	msg := g.popStack()
-	// 	buf.WriteString(fmt.Sprintf("TCRevertWithMsg(vm, %s%d.vu32);", VARIABLE_PREFIX, msg))
+	case "abort":
+		buf.WriteString("TCAbort(vm);")
+	case "memcpy":
+		size := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemcpy(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst,
+			VARIABLE_PREFIX, src,
+			VARIABLE_PREFIX, size))
+	case "memset":
+		size := g.popStack()
+		c := g.popStack()
+		src := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCMemset(vm, %s%d.vu32, %s%d.vi32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, src,
+			VARIABLE_PREFIX, c,
+			VARIABLE_PREFIX, size))
+	case "memmove":
+		n := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemmove(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
+	case "memcmp":
+		n := g.popStack()
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCMemcmp(vm, %s%d.vu32, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src, VARIABLE_PREFIX, n))
+	case "strcmp":
+		s2 := g.popStack()
+		s1 := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCStrcmp(vm, %s%d.vu32, %s%d.vu32);", VARIABLE_PREFIX, g.topStack(),
+			VARIABLE_PREFIX, s1, VARIABLE_PREFIX, s2))
+	case "strcpy":
+		src := g.popStack()
+		dst := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrcpy(vm, %s%d.vu32, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, dst, VARIABLE_PREFIX, src))
+	case "strlen":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vu32 = TCStrlen(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "atoi":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi32 = TCAtoi(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "atoi64":
+		s := g.popStack()
+		g.pushStack(g.varn)
+		buf.WriteString(fmt.Sprintf("%s%d.vi64 = TCAtoi64(vm, %s%d.vu32);",
+			VARIABLE_PREFIX, g.topStack(), VARIABLE_PREFIX, s))
+	case "TC_Assert":
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCAssert(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+	case "TC_Require":
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCRequire(vm, %s%d.vi32);", VARIABLE_PREFIX, cond))
+	case "TC_RequireWithMsg":
+		msg := g.popStack()
+		cond := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCRequireWithMsg(vm, %s%d.vi32, %s%d.vu32);",
+			VARIABLE_PREFIX, cond, VARIABLE_PREFIX, msg))
+	case "TC_Revert":
+		buf.WriteString("TCRevert(vm);")
+	case "TC_RevertWithMsg":
+		msg := g.popStack()
+		buf.WriteString(fmt.Sprintf("TCRevertWithMsg(vm, %s%d.vu32);", VARIABLE_PREFIX, msg))
 	default:
 		args := make([]int, len(fsig.ParamTypes))
 		for argIndex := range fsig.ParamTypes {
